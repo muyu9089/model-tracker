@@ -20,7 +20,7 @@ class ArtificialAnalysisTests(unittest.TestCase):
         description = "Artificial Analysis Intelligence Index v4.3 incorporates 10 evaluations"
         html = (
             '<span class="rounded-full bg-brand-purple-dark">Updated</span>'
-            f'<span style="text-wrap: pretty;">{description}</span>'
+            f'<span style="text-wrap:pretty">{description}</span>'
         )
         self.assertEqual(parse_index_update_text(html), description)
         self.assertIsNone(parse_index_update_text(html.replace("Updated", "New")))

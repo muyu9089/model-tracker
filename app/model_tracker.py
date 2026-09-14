@@ -18,6 +18,7 @@ from .qwen_agent import QwenAgent
 
 LOGGER = logging.getLogger("aihot.model_tracker")
 MODEL_STATUS_FILENAME = "存量模型信息记录状态.json"
+ALL_MODEL_DATA_FILENAME = "all_model_data.json"
 PENDING = "待更新"
 RECORDED = "已记录"
 METRIC_FIELDS = (
@@ -58,8 +59,39 @@ async def update_model_status_table(
     path: Path,
     new_names: list[str],
     aa_client: ArtificialAnalysisClient | None,
+    all_model_data_path: Path | None = None,
 ) -> dict[str, dict[str, Any]]:
     records: list[dict[str, Any]] = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+    all_model_data_path = all_model_data_path or Path("data", ALL_MODEL_DATA_FILENAME).resolve()
+    all_model_data: list[dict[str, Any]] = (
+        json.loads(all_model_data_path.read_text(encoding="utf-8"))
+        if all_model_data_path.exists()
+        else []
+    )
+    data_by_name = {
+        normalize_name(str(record.get("model_name", ""))): record
+        for record in all_model_data
+    }
+    cleaned_records: list[dict[str, Any]] = []
+    for record in records:
+        name = str(record.get("model_name", ""))
+        cleaned = {
+            "model_name": name,
+            "record_status": record.get("record_status", PENDING),
+        }
+        if record.get("update_error"):
+            cleaned["update_error"] = record["update_error"]
+        legacy_metrics = {field: record.get(field) for field in METRIC_FIELDS if field in record}
+        if legacy_metrics:
+            key = normalize_name(name)
+            model_data = data_by_name.get(key)
+            if model_data is None:
+                model_data = {"model_name": name}
+                all_model_data.append(model_data)
+                data_by_name[key] = model_data
+            model_data.update(legacy_metrics)
+        cleaned_records.append(cleaned)
+    records = cleaned_records
     known = {normalize_name(str(record.get("model_name", ""))) for record in records}
     for name in new_names:
         key = normalize_name(name)
@@ -69,6 +101,7 @@ async def update_model_status_table(
 
     if aa_client is None:
         atomic_write_json(path, records)
+        atomic_write_json(all_model_data_path, all_model_data)
         return {}
 
     metrics: dict[str, dict[str, Any]] = {}
@@ -96,7 +129,13 @@ async def update_model_status_table(
                 if record.get("record_status") != PENDING or not metric:
                     continue
                 if metric.get("matched"):
-                    record.update({field: metric.get(field) for field in METRIC_FIELDS})
+                    key = normalize_name(name)
+                    model_data = data_by_name.get(key)
+                    if model_data is None:
+                        model_data = {"model_name": name}
+                        all_model_data.append(model_data)
+                        data_by_name[key] = model_data
+                    model_data.update({field: metric.get(field) for field in METRIC_FIELDS})
                     record["record_status"] = RECORDED
                     record.pop("update_error", None)
                 else:
@@ -104,6 +143,7 @@ async def update_model_status_table(
     except Exception as exc:
         LOGGER.warning("Artificial Analysis 状态更新失败：%s", exc)
     atomic_write_json(path, records)
+    atomic_write_json(all_model_data_path, all_model_data)
     return metrics
 
 
@@ -187,6 +227,7 @@ async def scan_once(data_dir: Path, status_path: Path | None = None) -> list[dic
         status_path,
         [model["name"] for model in new_models],
         aa_client,
+        data_dir / ALL_MODEL_DATA_FILENAME,
     )
     for model in new_models:
         if model["name"] in metrics:

@@ -67,6 +67,7 @@ class ModelStatusTests(unittest.IsolatedAsyncioTestCase):
         }
         with TemporaryDirectory() as directory:
             path = Path(directory) / "status.json"
+            data_path = Path(directory) / "data" / "all_model_data.json"
             path.write_text(
                 '[{"model_name":"Existing","record_status":"已记录"}]',
                 encoding="utf-8",
@@ -76,12 +77,14 @@ class ModelStatusTests(unittest.IsolatedAsyncioTestCase):
                 metrics,
             )
 
-            await update_model_status_table(path, ["New Model"], client)
+            await update_model_status_table(path, ["New Model"], client, data_path)
 
             records = json.loads(path.read_text(encoding="utf-8"))
+            all_model_data = json.loads(data_path.read_text(encoding="utf-8"))
         self.assertEqual(client.requested, ["Existing", "New Model"])
         self.assertEqual([record["record_status"] for record in records], ["已记录", "已记录"])
-        self.assertEqual(records[1]["intelligence_index"], 50)
+        self.assertEqual(set(records[1]), {"model_name", "record_status"})
+        self.assertEqual(all_model_data[1]["intelligence_index"], 50)
 
     async def test_unchanged_description_only_retries_pending_models(self) -> None:
         description = "Artificial Analysis Intelligence Index v4.3 incorporates 10 evaluations"
@@ -95,6 +98,7 @@ class ModelStatusTests(unittest.IsolatedAsyncioTestCase):
         }
         with TemporaryDirectory() as directory:
             path = Path(directory) / "status.json"
+            data_path = Path(directory) / "data" / "all_model_data.json"
             path.write_text(
                 '[{"model_name":"Recorded","record_status":"已记录"},'
                 '{"model_name":"Pending","record_status":"待更新"}]',
@@ -103,9 +107,58 @@ class ModelStatusTests(unittest.IsolatedAsyncioTestCase):
             path.with_name("status.intelligence-index.txt").write_text(description, encoding="utf-8")
             client = FakeAAClient(description, metrics)
 
-            await update_model_status_table(path, [], client)
+            await update_model_status_table(path, [], client, data_path)
 
         self.assertEqual(client.requested, ["Pending"])
+
+    async def test_new_model_is_enriched_when_description_is_unchanged(self) -> None:
+        description = "Artificial Analysis Intelligence Index v4.3 incorporates 10 evaluations"
+        metric = {
+            "matched": True,
+            "intelligence_index": 55,
+            "output_tokens_per_task": "25 K",
+            "time_per_task_minutes": 4.0,
+        }
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "status.json"
+            data_path = Path(directory) / "data" / "all_model_data.json"
+            path.write_text("[]", encoding="utf-8")
+            path.with_name("status.intelligence-index.txt").write_text(description, encoding="utf-8")
+            client = FakeAAClient(description, {"New Model": metric})
+
+            await update_model_status_table(path, ["New Model"], client, data_path)
+
+            status = json.loads(path.read_text(encoding="utf-8"))
+            all_model_data = json.loads(data_path.read_text(encoding="utf-8"))
+        self.assertEqual(client.requested, ["New Model"])
+        self.assertEqual(status, [{"model_name": "New Model", "record_status": "已记录"}])
+        self.assertEqual(
+            all_model_data,
+            [{
+                "model_name": "New Model",
+                "intelligence_index": 55,
+                "output_tokens_per_task": "25 K",
+                "time_per_task_minutes": 4.0,
+            }],
+        )
+
+    async def test_legacy_metrics_are_moved_out_of_status_table(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "status.json"
+            data_path = Path(directory) / "data" / "all_model_data.json"
+            path.write_text(
+                '[{"model_name":"Existing","record_status":"已记录",'
+                '"intelligence_index":40,"output_tokens_per_task":"10 K",'
+                '"time_per_task_minutes":2.5,"ignored":"value"}]',
+                encoding="utf-8",
+            )
+
+            await update_model_status_table(path, [], None, data_path)
+
+            status = json.loads(path.read_text(encoding="utf-8"))
+            all_model_data = json.loads(data_path.read_text(encoding="utf-8"))
+        self.assertEqual(status, [{"model_name": "Existing", "record_status": "已记录"}])
+        self.assertEqual(all_model_data[0]["intelligence_index"], 40)
 
     async def test_scan_uses_status_table_as_new_model_baseline(self) -> None:
         release = {"name": "Existing", "item": {"id": "1", "title": "Existing released"}}

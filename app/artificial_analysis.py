@@ -75,7 +75,7 @@ class _IndexUpdateParser(HTMLParser):
         classes = set((attributes.get("class") or "").split())
         if "bg-brand-purple-dark" in classes:
             self._span = "badge"
-        elif "text-wrap: pretty" in (attributes.get("style") or ""):
+        elif "text-wrap:pretty" in (attributes.get("style") or "").replace(" ", ""):
             self._span = "description"
         else:
             return

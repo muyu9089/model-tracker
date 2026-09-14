@@ -118,7 +118,8 @@ python -m app.model_tracker --once
 - `data/seen_models.json`：已经发现过的模型，用于跨周期去重；
 - `data/reports/weekly_models_*.json`：机器可读结果；
 - `data/reports/weekly_models_*.md`：便于查看的中文报告。
-- `存量模型信息记录状态.json`：新增模型及其最新 AA 三项指标；
+- `存量模型信息记录状态.json`：模型名称、记录状态及可选的更新错误；
+- `data/all_model_data.json`：全部模型的最新 AA 三项指标；
 - `存量模型信息记录状态.intelligence-index.txt`：上次看到的 Intelligence Index 说明文本。
 
 发现新增模型后，脚本会访问 [Artificial Analysis Models](https://artificialanalysis.ai/models)，为每个模型补充：
