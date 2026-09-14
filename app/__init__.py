@@ -1,0 +1,1 @@
+"""AIHot MCP gateway service."""
