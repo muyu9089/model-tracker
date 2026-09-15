@@ -19,6 +19,7 @@ from .qwen_agent import QwenAgent
 LOGGER = logging.getLogger("aihot.model_tracker")
 MODEL_STATUS_FILENAME = "存量模型信息记录状态.json"
 ALL_MODEL_DATA_FILENAME = "all_model_data.json"
+TAU_BANKING_DATA_FILENAME = "tau3_banking_model_data.json"
 PENDING = "待更新"
 RECORDED = "已记录"
 METRIC_FIELDS = (
@@ -26,6 +27,7 @@ METRIC_FIELDS = (
     "output_tokens_per_task",
     "time_per_task_minutes",
 )
+STATUS_LAYERS = ("intelligence_index", "tau3-banking")
 
 def normalize_name(name: str) -> str:
     normalized = unicodedata.normalize("NFKC", name).casefold()
@@ -55,13 +57,38 @@ def atomic_write_text(path: Path, value: str) -> None:
     temporary.replace(path)
 
 
+def load_status_table(path: Path) -> dict[str, list[dict[str, Any]]]:
+    raw = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+    table = {"intelligence_index": raw, "tau3-banking": []} if isinstance(raw, list) else raw
+    for layer in STATUS_LAYERS:
+        table.setdefault(layer, [])
+    names = {}
+    for layer in STATUS_LAYERS:
+        for record in table[layer]:
+            name = str(record.get("model_name", ""))
+            key = normalize_name(name)
+            if key:
+                names.setdefault(key, name)
+    for layer in STATUS_LAYERS:
+        for record in table[layer]:
+            key = normalize_name(str(record.get("model_name", "")))
+            if key:
+                record["model_name"] = names[key]
+        known = {normalize_name(str(record.get("model_name", ""))) for record in table[layer]}
+        for key, name in names.items():
+            if key not in known:
+                table[layer].append({"model_name": name, "record_status": PENDING})
+    return table
+
+
 async def update_model_status_table(
     path: Path,
     new_names: list[str],
     aa_client: ArtificialAnalysisClient | None,
     all_model_data_path: Path | None = None,
 ) -> dict[str, dict[str, Any]]:
-    records: list[dict[str, Any]] = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+    status_table = load_status_table(path)
+    records = status_table["intelligence_index"]
     all_model_data_path = all_model_data_path or Path("data", ALL_MODEL_DATA_FILENAME).resolve()
     all_model_data: list[dict[str, Any]] = (
         json.loads(all_model_data_path.read_text(encoding="utf-8"))
@@ -92,15 +119,17 @@ async def update_model_status_table(
             model_data.update(legacy_metrics)
         cleaned_records.append(cleaned)
     records = cleaned_records
+    status_table["intelligence_index"] = records
     known = {normalize_name(str(record.get("model_name", ""))) for record in records}
     for name in new_names:
         key = normalize_name(name)
         if key and key not in known:
             records.append({"model_name": name, "record_status": PENDING})
+            status_table["tau3-banking"].append({"model_name": name, "record_status": PENDING})
             known.add(key)
 
     if aa_client is None:
-        atomic_write_json(path, records)
+        atomic_write_json(path, status_table)
         atomic_write_json(all_model_data_path, all_model_data)
         return {}
 
@@ -113,7 +142,7 @@ async def update_model_status_table(
         if current_text is not None and current_text != previous_text:
             for record in records:
                 record["record_status"] = PENDING
-            atomic_write_json(path, records)
+            atomic_write_json(path, status_table)
             atomic_write_text(text_path, current_text)
 
         pending_names = [
@@ -142,8 +171,43 @@ async def update_model_status_table(
                     record["update_error"] = metric.get("error") or "未匹配到 Artificial Analysis 模型"
     except Exception as exc:
         LOGGER.warning("Artificial Analysis 状态更新失败：%s", exc)
-    atomic_write_json(path, records)
+    atomic_write_json(path, status_table)
     atomic_write_json(all_model_data_path, all_model_data)
+    return metrics
+
+
+async def update_tau_banking_status_table(
+    path: Path,
+    aa_client: ArtificialAnalysisClient,
+    data_path: Path,
+) -> dict[str, dict[str, Any]]:
+    status_table = load_status_table(path)
+    records = status_table["tau3-banking"]
+    try:
+        html = await aa_client.fetch_tau_banking_html()
+        metrics = await aa_client.enrich_tau_banking_models(
+            [str(record["model_name"]) for record in records], html
+        )
+    except Exception as exc:
+        LOGGER.warning("𝜏³-Banking 状态更新失败：%s", exc)
+        return {}
+    model_data = []
+    for record in records:
+        name = str(record["model_name"])
+        metric = metrics.get(name) or {}
+        if not metric.get("matched"):
+            record["record_status"] = PENDING
+            record["update_error"] = metric.get("error") or "未获取到 𝜏³-Banking 指标"
+            continue
+        item = {"model_name": name}
+        item.update({field: metric[field] for field in (
+            "tau3_banking_score", "output_tokens_per_task", "time_per_task_minutes"
+        )})
+        model_data.append(item)
+        record["record_status"] = RECORDED
+        record.pop("update_error", None)
+    atomic_write_json(path, status_table)
+    atomic_write_json(data_path, model_data)
     return metrics
 
 
@@ -186,10 +250,11 @@ async def scan_once(data_dir: Path, status_path: Path | None = None) -> list[dic
     timezone = ZoneInfo("Asia/Shanghai")
     now = datetime.now(timezone)
     status_path = status_path or Path(MODEL_STATUS_FILENAME).resolve()
-    status_records = json.loads(status_path.read_text(encoding="utf-8")) if status_path.exists() else []
+    status_table = load_status_table(status_path)
     known_models = {
         normalize_name(str(record.get("model_name", "")))
-        for record in status_records
+        for layer in STATUS_LAYERS
+        for record in status_table[layer]
     }
     seen_path = data_dir / "seen_models.json"
     seen = load_seen(seen_path)
@@ -229,6 +294,10 @@ async def scan_once(data_dir: Path, status_path: Path | None = None) -> list[dic
         aa_client,
         data_dir / ALL_MODEL_DATA_FILENAME,
     )
+    if aa_client is not None:
+        await update_tau_banking_status_table(
+            status_path, aa_client, data_dir / TAU_BANKING_DATA_FILENAME
+        )
     for model in new_models:
         if model["name"] in metrics:
             model["artificial_analysis"] = metrics[model["name"]]
@@ -280,13 +349,23 @@ def main() -> None:
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--once", action="store_true", help="立即执行一次后退出")
     mode.add_argument("--daemon", action="store_true", help="启动常驻定时任务")
+    mode.add_argument("--tau3-banking", action="store_true", help="仅更新 𝜏³-Banking 指标")
     parser.add_argument("--data-dir", default="data", help="状态和报告保存目录")
     parser.add_argument("--status-table", default=MODEL_STATUS_FILENAME, help="模型信息状态表路径")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     data_dir = Path(args.data_dir).resolve()
     status_path = Path(args.status_table).resolve()
-    if args.once:
+    if args.tau3_banking:
+        settings = get_settings()
+        client = ArtificialAnalysisClient(
+            base_url=settings.artificial_analysis_base_url,
+            timeout_seconds=settings.artificial_analysis_timeout_seconds,
+        )
+        asyncio.run(update_tau_banking_status_table(
+            status_path, client, data_dir / TAU_BANKING_DATA_FILENAME
+        ))
+    elif args.once:
         asyncio.run(scan_once(data_dir, status_path))
     else:
         asyncio.run(run_daemon(data_dir, status_path))

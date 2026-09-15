@@ -6,8 +6,10 @@ from app.artificial_analysis import (
     parse_catalog,
     parse_index_update_text,
     parse_metric_record,
+    parse_tau_banking_catalog,
     round_half_up,
     select_model,
+    ArtificialAnalysisClient,
 )
 
 
@@ -51,6 +53,35 @@ class ArtificialAnalysisTests(unittest.TestCase):
         html = flight_html("0:" + json.dumps(record, separators=(",", ":")))
         self.assertEqual(parse_catalog(html)[0]["slug"], "demo-70b-high")
         self.assertEqual(parse_metric_record(html, "demo-70b-high")["intelligenceIndex"], 42.5)
+
+    def test_tau_banking_payload_contains_score_tokens_and_speed(self) -> None:
+        record = {
+            "id": "1", "slug": "qwen3-8-max", "name": "Qwen3.8 Max",
+            "tauBanking": 0.51340206185567,
+            "canonicalEvalTokenCounts": {"tauBanking": {"answer": 280112, "reasoning": 639858}},
+            "medianCanonicalAnswerOutputSpeed": 52.3251837412224,
+        }
+        html = flight_html("0:" + json.dumps(record, separators=(",", ":")))
+        self.assertEqual(parse_tau_banking_catalog(html), [record])
+
+
+class TauBankingClientTests(unittest.IsolatedAsyncioTestCase):
+    async def test_enrichment_uses_97_tasks_and_marks_missing_models_unmatched(self) -> None:
+        record = {
+            "id": "1", "slug": "qwen3-8-max", "name": "Qwen3.8 Max",
+            "tauBanking": 0.51340206185567,
+            "canonicalEvalTokenCounts": {"tauBanking": {"answer": 280112, "reasoning": 639858}},
+            "medianCanonicalAnswerOutputSpeed": 52.3251837412224,
+        }
+        html = flight_html("0:" + json.dumps(record, separators=(",", ":")))
+        results = await ArtificialAnalysisClient().enrich_tau_banking_models(
+            ["Qwen3.8 Max", "Qwen3.7 Max", "Unrelated Model"], html
+        )
+        self.assertEqual(results["Qwen3.8 Max"]["tau3_banking_score"], 51.3)
+        self.assertEqual(results["Qwen3.8 Max"]["output_tokens_per_task"], "9 K")
+        self.assertEqual(results["Qwen3.8 Max"]["time_per_task_minutes"], 3.0)
+        self.assertFalse(results["Qwen3.7 Max"]["matched"])
+        self.assertFalse(results["Unrelated Model"]["matched"])
 
     def test_largest_parameters_then_highest_effort(self) -> None:
         catalog = [

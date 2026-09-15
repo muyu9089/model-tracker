@@ -5,7 +5,7 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from app.model_tracker import normalize_name, scan_once, update_model_status_table, write_markdown
+from app.model_tracker import normalize_name, scan_once, update_model_status_table, update_tau_banking_status_table, write_markdown
 
 
 class FakeAAClient:
@@ -50,6 +50,62 @@ class ModelTrackerExtractionTests(unittest.TestCase):
 
 
 class ModelStatusTests(unittest.IsolatedAsyncioTestCase):
+    async def test_tau_banking_updates_only_its_layer_and_separate_data(self) -> None:
+        class FakeTauClient:
+            async def fetch_tau_banking_html(self) -> str:
+                return "page"
+
+            async def enrich_tau_banking_models(self, names: list[str], html: str) -> dict:
+                return {
+                    "Matched": {"matched": True, "tau3_banking_score": 51.3,
+                                "output_tokens_per_task": "9 K", "time_per_task_minutes": 3.0},
+                    "Missing": {"matched": False, "error": "未匹配到 𝜏³-Banking 模型"},
+                }
+
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "status.json"
+            data_path = Path(directory) / "tau_data.json"
+            original_index = [
+                {"model_name": "Matched", "record_status": "已记录"},
+                {"model_name": "Missing", "record_status": "已记录"},
+            ]
+            path.write_text(json.dumps({"intelligence_index": original_index,
+                                        "tau3-banking": [
+                                            {"model_name": "Matched", "record_status": "待更新"},
+                                            {"model_name": "Missing", "record_status": "待更新"},
+                                        ]}), encoding="utf-8")
+
+            await update_tau_banking_status_table(path, FakeTauClient(), data_path)
+
+            status = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(data_path.read_text(encoding="utf-8"))
+        self.assertEqual(status["intelligence_index"], original_index)
+        self.assertEqual(status["tau3-banking"][0]["record_status"], "已记录")
+        self.assertEqual(status["tau3-banking"][1]["record_status"], "待更新")
+        self.assertEqual(data, [{"model_name": "Matched", "tau3_banking_score": 51.3,
+                                 "output_tokens_per_task": "9 K", "time_per_task_minutes": 3.0}])
+
+    async def test_layers_sync_names_without_changing_existing_statuses(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "status.json"
+            data_path = Path(directory) / "all_model_data.json"
+            path.write_text(json.dumps({
+                "intelligence_index": [{"model_name": "Existing", "record_status": "已记录"}],
+                "tau3-banking": [
+                    {"model_name": "existing", "record_status": "已记录"},
+                    {"model_name": "Tau Only", "record_status": "已记录"},
+                ],
+            }), encoding="utf-8")
+
+            await update_model_status_table(path, ["New Model"], None, data_path)
+
+            status = json.loads(path.read_text(encoding="utf-8"))
+        for layer in ("intelligence_index", "tau3-banking"):
+            self.assertEqual([record["model_name"] for record in status[layer]],
+                             ["Existing", "Tau Only", "New Model"])
+        self.assertEqual([record["record_status"] for record in status["tau3-banking"]],
+                         ["已记录", "已记录", "待更新"])
+
     async def test_new_model_is_added_and_description_change_refreshes_all(self) -> None:
         metrics = {
             "Existing": {
@@ -79,11 +135,16 @@ class ModelStatusTests(unittest.IsolatedAsyncioTestCase):
 
             await update_model_status_table(path, ["New Model"], client, data_path)
 
-            records = json.loads(path.read_text(encoding="utf-8"))
+            status = json.loads(path.read_text(encoding="utf-8"))
+            records = status["intelligence_index"]
             all_model_data = json.loads(data_path.read_text(encoding="utf-8"))
         self.assertEqual(client.requested, ["Existing", "New Model"])
         self.assertEqual([record["record_status"] for record in records], ["已记录", "已记录"])
         self.assertEqual(set(records[1]), {"model_name", "record_status"})
+        self.assertEqual([record["model_name"] for record in status["tau3-banking"]],
+                         ["Existing", "New Model"])
+        self.assertEqual([record["record_status"] for record in status["tau3-banking"]],
+                         ["待更新", "待更新"])
         self.assertEqual(all_model_data[1]["intelligence_index"], 50)
 
     async def test_unchanged_description_only_retries_pending_models(self) -> None:
@@ -131,7 +192,10 @@ class ModelStatusTests(unittest.IsolatedAsyncioTestCase):
             status = json.loads(path.read_text(encoding="utf-8"))
             all_model_data = json.loads(data_path.read_text(encoding="utf-8"))
         self.assertEqual(client.requested, ["New Model"])
-        self.assertEqual(status, [{"model_name": "New Model", "record_status": "已记录"}])
+        self.assertEqual(status["intelligence_index"],
+                         [{"model_name": "New Model", "record_status": "已记录"}])
+        self.assertEqual(status["tau3-banking"],
+                         [{"model_name": "New Model", "record_status": "待更新"}])
         self.assertEqual(
             all_model_data,
             [{
@@ -157,7 +221,10 @@ class ModelStatusTests(unittest.IsolatedAsyncioTestCase):
 
             status = json.loads(path.read_text(encoding="utf-8"))
             all_model_data = json.loads(data_path.read_text(encoding="utf-8"))
-        self.assertEqual(status, [{"model_name": "Existing", "record_status": "已记录"}])
+        self.assertEqual(status["intelligence_index"],
+                         [{"model_name": "Existing", "record_status": "已记录"}])
+        self.assertEqual(status["tau3-banking"],
+                         [{"model_name": "Existing", "record_status": "待更新"}])
         self.assertEqual(all_model_data[0]["intelligence_index"], 40)
 
     async def test_scan_uses_status_table_as_new_model_baseline(self) -> None:
