@@ -181,6 +181,16 @@ def parse_tau_banking_catalog(html: str) -> list[dict[str, Any]]:
     ]
 
 
+def parse_terminalbench_catalog(html: str) -> list[dict[str, Any]]:
+    """Extract evaluated models and their Terminal-Bench 4.0 inputs."""
+    return [
+        model for model in _decode_objects(_next_flight_text(html), '{"id":"')
+        if isinstance(model.get("slug"), str)
+        and isinstance(model.get("name"), str)
+        and isinstance(model.get("terminalBench40"), (int, float))
+    ]
+
+
 def _parameter_billions(model: dict[str, Any]) -> float:
     explicit = model.get("parameters")
     if isinstance(explicit, (int, float)):
@@ -306,6 +316,18 @@ class ArtificialAnalysisClient:
             response.raise_for_status()
             return response.text
 
+    async def fetch_terminalbench_html(self) -> str:
+        headers = {"User-Agent": "Mozilla/5.0 (compatible; AIHotModelTracker/1.1)"}
+        async with httpx.AsyncClient(
+            base_url=self.base_url.rstrip("/"),
+            headers=headers,
+            timeout=self.timeout_seconds,
+            follow_redirects=True,
+        ) as client:
+            response = await client.get("/evaluations/terminalbench-4-0")
+            response.raise_for_status()
+            return response.text
+
     async def enrich_tau_banking_models(
         self, names: list[str], html: str
     ) -> dict[str, dict[str, Any]]:
@@ -343,6 +365,47 @@ class ArtificialAnalysisClient:
                 "output_tokens_per_task": format_thousands(tokens_per_task),
                 "time_per_task_minutes": round_half_up(tokens_per_task / speed / 60, 1),
                 "source_url": f"{self.base_url.rstrip('/')}/evaluations/tau3-banking",
+                "fetched_at": datetime.now(timezone.utc).isoformat(),
+            }
+        return results
+
+    async def enrich_terminalbench_models(
+        self, names: list[str], html: str
+    ) -> dict[str, dict[str, Any]]:
+        catalog = parse_terminalbench_catalog(html)
+        if not catalog:
+            raise RuntimeError("未能从 Artificial Analysis 页面解析 Terminal-Bench 4.0 数据")
+        results = {}
+        for name in names:
+            key = normalize_model_name(name)
+            exact_models = [model for model in catalog if key in {
+                normalize_model_name(value)
+                for value in (
+                    model["slug"], model["name"], model.get("shortName") or "",
+                    _QUALIFIER_PATTERN.sub("", model["name"]),
+                    _QUALIFIER_PATTERN.sub("", model.get("shortName") or ""),
+                )
+            }]
+            selected, method = select_model(name, exact_models)
+            if selected is None:
+                results[name] = {"matched": False, "error": "未匹配到 Terminal-Bench 4.0 模型"}
+                continue
+            counts = (selected.get("canonicalEvalTokenCounts") or {}).get("terminalBench40") or {}
+            answer, reasoning = counts.get("answer"), counts.get("reasoning")
+            speed = selected.get("medianCanonicalAnswerOutputSpeed")
+            if not all(isinstance(value, (int, float)) for value in (answer, reasoning, speed)) or speed <= 0:
+                results[name] = {"matched": False, "error": "已匹配模型，但缺少完整 token 或速度数据"}
+                continue
+            tokens_per_task = (answer + reasoning) / 66
+            results[name] = {
+                "matched": True,
+                "model_name": selected["name"],
+                "slug": selected["slug"],
+                "match_method": method,
+                "terminalbench_4_0_score": round_half_up(selected["terminalBench40"] * 100, 1),
+                "output_tokens_per_task": format_thousands(tokens_per_task),
+                "time_per_task_minutes": round_half_up(tokens_per_task / speed / 60, 1),
+                "source_url": f"{self.base_url.rstrip('/')}/evaluations/terminalbench-4-0",
                 "fetched_at": datetime.now(timezone.utc).isoformat(),
             }
         return results

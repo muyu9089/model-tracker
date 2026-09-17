@@ -5,7 +5,7 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from app.model_tracker import normalize_name, scan_once, update_model_status_table, update_tau_banking_status_table, write_markdown
+from app.model_tracker import normalize_name, scan_once, update_model_status_table, update_tau_banking_status_table, update_terminalbench_status_table, write_markdown
 
 
 class FakeAAClient:
@@ -50,6 +50,44 @@ class ModelTrackerExtractionTests(unittest.TestCase):
 
 
 class ModelStatusTests(unittest.IsolatedAsyncioTestCase):
+    async def test_terminalbench_updates_its_layer_and_separate_data(self) -> None:
+        class FakeTerminalClient:
+            async def fetch_terminalbench_html(self) -> str:
+                return "page"
+
+            async def enrich_terminalbench_models(self, names: list[str], html: str) -> dict:
+                return {
+                    "Matched": {"matched": True, "terminalbench_4_0_score": 50.0,
+                                "output_tokens_per_task": "2 K", "time_per_task_minutes": 0.3},
+                    "Missing": {"matched": False, "error": "未匹配到 Terminal-Bench 4.0 模型"},
+                }
+
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "status.json"
+            data_path = Path(directory) / "terminalbench_data.json"
+            original_index = [
+                {"model_name": "Matched", "record_status": "已记录"},
+                {"model_name": "Missing", "record_status": "已记录"},
+            ]
+            path.write_text(json.dumps({
+                "intelligence_index": original_index,
+                "terminalbench-4-0": [
+                    {"model_name": "Matched", "record_status": "待更新"},
+                    {"model_name": "Missing", "record_status": "待更新"},
+                ],
+                "tau3-banking": original_index,
+            }), encoding="utf-8")
+
+            await update_terminalbench_status_table(path, FakeTerminalClient(), data_path)
+
+            status = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(data_path.read_text(encoding="utf-8"))
+        self.assertEqual(status["intelligence_index"], original_index)
+        self.assertEqual(status["terminalbench-4-0"][0]["record_status"], "已记录")
+        self.assertEqual(status["terminalbench-4-0"][1]["record_status"], "待更新")
+        self.assertEqual(data, [{"model_name": "Matched", "terminalbench_4_0_score": 50.0,
+                                 "output_tokens_per_task": "2 K", "time_per_task_minutes": 0.3}])
+
     async def test_tau_banking_updates_only_its_layer_and_separate_data(self) -> None:
         class FakeTauClient:
             async def fetch_tau_banking_html(self) -> str:
@@ -100,7 +138,7 @@ class ModelStatusTests(unittest.IsolatedAsyncioTestCase):
             await update_model_status_table(path, ["New Model"], None, data_path)
 
             status = json.loads(path.read_text(encoding="utf-8"))
-        for layer in ("intelligence_index", "tau3-banking"):
+        for layer in ("intelligence_index", "terminalbench-4-0", "tau3-banking"):
             self.assertEqual([record["model_name"] for record in status[layer]],
                              ["Existing", "Tau Only", "New Model"])
         self.assertEqual([record["record_status"] for record in status["tau3-banking"]],
@@ -141,6 +179,10 @@ class ModelStatusTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.requested, ["Existing", "New Model"])
         self.assertEqual([record["record_status"] for record in records], ["已记录", "已记录"])
         self.assertEqual(set(records[1]), {"model_name", "record_status"})
+        self.assertEqual([record["model_name"] for record in status["terminalbench-4-0"]],
+                         ["Existing", "New Model"])
+        self.assertEqual([record["record_status"] for record in status["terminalbench-4-0"]],
+                         ["待更新", "待更新"])
         self.assertEqual([record["model_name"] for record in status["tau3-banking"]],
                          ["Existing", "New Model"])
         self.assertEqual([record["record_status"] for record in status["tau3-banking"]],
@@ -195,6 +237,8 @@ class ModelStatusTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status["intelligence_index"],
                          [{"model_name": "New Model", "record_status": "已记录"}])
         self.assertEqual(status["tau3-banking"],
+                         [{"model_name": "New Model", "record_status": "待更新"}])
+        self.assertEqual(status["terminalbench-4-0"],
                          [{"model_name": "New Model", "record_status": "待更新"}])
         self.assertEqual(
             all_model_data,

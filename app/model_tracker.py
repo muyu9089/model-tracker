@@ -20,6 +20,7 @@ LOGGER = logging.getLogger("aihot.model_tracker")
 MODEL_STATUS_FILENAME = "存量模型信息记录状态.json"
 ALL_MODEL_DATA_FILENAME = "all_model_data.json"
 TAU_BANKING_DATA_FILENAME = "tau3_banking_model_data.json"
+TERMINALBENCH_DATA_FILENAME = "terminalbench_4-0_model_data.json"
 PENDING = "待更新"
 RECORDED = "已记录"
 METRIC_FIELDS = (
@@ -27,7 +28,7 @@ METRIC_FIELDS = (
     "output_tokens_per_task",
     "time_per_task_minutes",
 )
-STATUS_LAYERS = ("intelligence_index", "tau3-banking")
+STATUS_LAYERS = ("intelligence_index", "terminalbench-4-0", "tau3-banking")
 
 def normalize_name(name: str) -> str:
     normalized = unicodedata.normalize("NFKC", name).casefold()
@@ -124,8 +125,8 @@ async def update_model_status_table(
     for name in new_names:
         key = normalize_name(name)
         if key and key not in known:
-            records.append({"model_name": name, "record_status": PENDING})
-            status_table["tau3-banking"].append({"model_name": name, "record_status": PENDING})
+            for layer in STATUS_LAYERS:
+                status_table[layer].append({"model_name": name, "record_status": PENDING})
             known.add(key)
 
     if aa_client is None:
@@ -202,6 +203,41 @@ async def update_tau_banking_status_table(
         item = {"model_name": name}
         item.update({field: metric[field] for field in (
             "tau3_banking_score", "output_tokens_per_task", "time_per_task_minutes"
+        )})
+        model_data.append(item)
+        record["record_status"] = RECORDED
+        record.pop("update_error", None)
+    atomic_write_json(path, status_table)
+    atomic_write_json(data_path, model_data)
+    return metrics
+
+
+async def update_terminalbench_status_table(
+    path: Path,
+    aa_client: ArtificialAnalysisClient,
+    data_path: Path,
+) -> dict[str, dict[str, Any]]:
+    status_table = load_status_table(path)
+    records = status_table["terminalbench-4-0"]
+    try:
+        html = await aa_client.fetch_terminalbench_html()
+        metrics = await aa_client.enrich_terminalbench_models(
+            [str(record["model_name"]) for record in records], html
+        )
+    except Exception as exc:
+        LOGGER.warning("Terminal-Bench 4.0 状态更新失败：%s", exc)
+        return {}
+    model_data = []
+    for record in records:
+        name = str(record["model_name"])
+        metric = metrics.get(name) or {}
+        if not metric.get("matched"):
+            record["record_status"] = PENDING
+            record["update_error"] = metric.get("error") or "未获取到 Terminal-Bench 4.0 指标"
+            continue
+        item = {"model_name": name}
+        item.update({field: metric[field] for field in (
+            "terminalbench_4_0_score", "output_tokens_per_task", "time_per_task_minutes"
         )})
         model_data.append(item)
         record["record_status"] = RECORDED
@@ -295,6 +331,9 @@ async def scan_once(data_dir: Path, status_path: Path | None = None) -> list[dic
         data_dir / ALL_MODEL_DATA_FILENAME,
     )
     if aa_client is not None:
+        await update_terminalbench_status_table(
+            status_path, aa_client, data_dir / TERMINALBENCH_DATA_FILENAME
+        )
         await update_tau_banking_status_table(
             status_path, aa_client, data_dir / TAU_BANKING_DATA_FILENAME
         )
@@ -350,21 +389,27 @@ def main() -> None:
     mode.add_argument("--once", action="store_true", help="立即执行一次后退出")
     mode.add_argument("--daemon", action="store_true", help="启动常驻定时任务")
     mode.add_argument("--tau3-banking", action="store_true", help="仅更新 𝜏³-Banking 指标")
+    mode.add_argument("--terminalbench-4-0", action="store_true", help="仅更新 Terminal-Bench 4.0 指标")
     parser.add_argument("--data-dir", default="data", help="状态和报告保存目录")
     parser.add_argument("--status-table", default=MODEL_STATUS_FILENAME, help="模型信息状态表路径")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     data_dir = Path(args.data_dir).resolve()
     status_path = Path(args.status_table).resolve()
-    if args.tau3_banking:
+    if args.tau3_banking or args.terminalbench_4_0:
         settings = get_settings()
         client = ArtificialAnalysisClient(
             base_url=settings.artificial_analysis_base_url,
             timeout_seconds=settings.artificial_analysis_timeout_seconds,
         )
-        asyncio.run(update_tau_banking_status_table(
-            status_path, client, data_dir / TAU_BANKING_DATA_FILENAME
-        ))
+        if args.tau3_banking:
+            asyncio.run(update_tau_banking_status_table(
+                status_path, client, data_dir / TAU_BANKING_DATA_FILENAME
+            ))
+        else:
+            asyncio.run(update_terminalbench_status_table(
+                status_path, client, data_dir / TERMINALBENCH_DATA_FILENAME
+            ))
     elif args.once:
         asyncio.run(scan_once(data_dir, status_path))
     else:

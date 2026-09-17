@@ -118,8 +118,9 @@ python -m app.model_tracker --once
 - `data/seen_models.json`：已经发现过的模型，用于跨周期去重；
 - `data/reports/weekly_models_*.json`：机器可读结果；
 - `data/reports/weekly_models_*.md`：便于查看的中文报告。
-- `存量模型信息记录状态.json`：按 `intelligence_index` 和 `tau3-banking` 分层保存模型名称、记录状态及可选的更新错误；新增模型名称会同步到两个层级，`tau3-banking` 新记录初始为“待更新”；
+- `存量模型信息记录状态.json`：按 `intelligence_index`、`terminalbench-4-0` 和 `tau3-banking` 分层保存模型名称、记录状态及可选的更新错误；三个层级的模型名称保持同步，各自独立更新状态；
 - `data/all_model_data.json`：全部模型的最新 AA 三项指标；
+- `data/terminalbench_4-0_model_data.json`：Terminal-Bench 4.0 分数、每任务输出 token 和每任务耗时；
 - `data/tau3_banking_model_data.json`：𝜏³-Banking 分数（百分比）、每任务输出 token 和每任务耗时；
 - `存量模型信息记录状态.intelligence-index.txt`：上次看到的 Intelligence Index 说明文本。
 
@@ -131,6 +132,12 @@ python -m app.model_tracker --once
 - 实际匹配到的 AA 型号、slug、参数量、推理深度和匹配方式。
 
 AA 型号选择保留原有本地规则匹配：依次比较 AA 的型号 slug、完整名称、去除思考深度限定后的名称以及所属 release 家族名称，并结合包含关系和名称相似度选择候选。输入名称只对应一个模型系列时，优先选择参数量最大的型号，参数量相同时选择思考深度最高的变体；无法可靠对应时标记为“未匹配”。该过程不调用 Qwen，因此不会因 AA 映射额外触发模型 API 请求。AA 页面暂时不可用时，本轮模型发现和去重仍会正常完成，报告中的 AA 指标显示为“未获取”。页面显示 `Updated` 且 Intelligence Index 说明文本发生变化时，状态表中的全部模型会先标为“待更新”，再逐项刷新；抓取或匹配失败的记录会保持“待更新”，供下次任务重试。可用 `--status-table` 指定其他状态表路径。
+
+每周扫描还会读取 [Terminal-Bench 4.0 排行榜](https://artificialanalysis.ai/evaluations/terminalbench-4-0)，按状态表 `terminalbench-4-0` 层的模型名称匹配评测结果。分数保存为百分比并保留一位小数；输出 token 按 66 个任务计算后以千位保存为 `xx K`；耗时按分钟保留一位小数。单独更新可运行：
+
+```bash
+python -m app.model_tracker --terminalbench-4-0
+```
 
 启用 Artificial Analysis 时，每周扫描也会读取 [𝜏³-Banking 排行榜](https://artificialanalysis.ai/evaluations/tau3-banking)，按状态表 `tau3-banking` 层的模型名称匹配评测结果。分数保存为百分比并保留一位小数；输出 token 按千位保存为 `xx K`；耗时按分钟保留一位小数。只有三个指标都可计算时，该层记录才标为“已记录”。单独更新该层可运行：
 

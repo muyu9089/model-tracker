@@ -7,6 +7,7 @@ from app.artificial_analysis import (
     parse_index_update_text,
     parse_metric_record,
     parse_tau_banking_catalog,
+    parse_terminalbench_catalog,
     round_half_up,
     select_model,
     ArtificialAnalysisClient,
@@ -64,6 +65,18 @@ class ArtificialAnalysisTests(unittest.TestCase):
         html = flight_html("0:" + json.dumps(record, separators=(",", ":")))
         self.assertEqual(parse_tau_banking_catalog(html), [record])
 
+    def test_terminalbench_payload_contains_score_tokens_and_speed(self) -> None:
+        record = {
+            "id": "1", "slug": "demo-high", "name": "Demo (high)",
+            "terminalBench40": 0.5,
+            "canonicalEvalTokenCounts": {
+                "terminalBench40": {"answer": 66000, "reasoning": 66000}
+            },
+            "medianCanonicalAnswerOutputSpeed": 100,
+        }
+        html = flight_html("0:" + json.dumps(record, separators=(",", ":")))
+        self.assertEqual(parse_terminalbench_catalog(html), [record])
+
 
 class TauBankingClientTests(unittest.IsolatedAsyncioTestCase):
     async def test_enrichment_uses_97_tasks_and_marks_missing_models_unmatched(self) -> None:
@@ -82,6 +95,24 @@ class TauBankingClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(results["Qwen3.8 Max"]["time_per_task_minutes"], 3.0)
         self.assertFalse(results["Qwen3.7 Max"]["matched"])
         self.assertFalse(results["Unrelated Model"]["matched"])
+
+    async def test_terminalbench_enrichment_uses_66_tasks(self) -> None:
+        record = {
+            "id": "1", "slug": "demo-high", "name": "Demo (high)",
+            "terminalBench40": 0.5,
+            "canonicalEvalTokenCounts": {
+                "terminalBench40": {"answer": 66000, "reasoning": 66000}
+            },
+            "medianCanonicalAnswerOutputSpeed": 100,
+        }
+        html = flight_html("0:" + json.dumps(record, separators=(",", ":")))
+        results = await ArtificialAnalysisClient().enrich_terminalbench_models(
+            ["Demo", "Missing"], html
+        )
+        self.assertEqual(results["Demo"]["terminalbench_4_0_score"], 50.0)
+        self.assertEqual(results["Demo"]["output_tokens_per_task"], "2 K")
+        self.assertEqual(results["Demo"]["time_per_task_minutes"], 0.3)
+        self.assertFalse(results["Missing"]["matched"])
 
     def test_largest_parameters_then_highest_effort(self) -> None:
         catalog = [
