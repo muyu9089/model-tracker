@@ -123,6 +123,7 @@ python -m app.model_tracker --once
 - `data/terminalbench_4-0_model_data.json`：Terminal-Bench 4.0 分数、每任务输出 token 和每任务耗时；
 - `data/tau3_banking_model_data.json`：𝜏³-Banking 分数（百分比）、每任务输出 token 和每任务耗时；
 - `存量模型信息记录状态.intelligence-index.txt`：上次看到的 Intelligence Index 说明文本。
+- `model_info.json`：按 `intelligence_index` 层级的模型名称联网采集、对应导入模板 A–T 列的资料。
 
 发现新增模型后，脚本会访问 [Artificial Analysis Models](https://artificialanalysis.ai/models)，为每个模型补充：
 
@@ -144,6 +145,14 @@ python -m app.model_tracker --terminalbench-4-0
 ```bash
 python -m app.model_tracker --tau3-banking
 ```
+
+按 `存量模型信息记录状态.json` 的 `intelligence_index` 模型清单，调用 Qwen 联网搜索并采集“导入模板.xlsx”中 B–T 列资料：
+
+```bash
+python -m app.model_tracker --model-info
+```
+
+结果默认写入 `model_info.json`。每个模型成功后立即保存；再次运行会跳过已有完整记录，只重试缺失项。可用 `--model-info-output` 指定其他输出路径。
 
 启动常驻任务：
 

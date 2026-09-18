@@ -10,17 +10,19 @@ from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from pydantic import ValidationError
 
 from .artificial_analysis import ArtificialAnalysisClient, parse_index_update_text
 from .config import get_settings
 from .mcp_client import AIHotMCPClient
-from .qwen_agent import QwenAgent
+from .qwen_agent import ModelInfo, QwenAgent
 
 LOGGER = logging.getLogger("aihot.model_tracker")
 MODEL_STATUS_FILENAME = "存量模型信息记录状态.json"
 ALL_MODEL_DATA_FILENAME = "all_model_data.json"
 TAU_BANKING_DATA_FILENAME = "tau3_banking_model_data.json"
 TERMINALBENCH_DATA_FILENAME = "terminalbench_4-0_model_data.json"
+MODEL_INFO_FILENAME = "model_info.json"
 PENDING = "待更新"
 RECORDED = "已记录"
 METRIC_FIELDS = (
@@ -80,6 +82,70 @@ def load_status_table(path: Path) -> dict[str, list[dict[str, Any]]]:
             if key not in known:
                 table[layer].append({"model_name": name, "record_status": PENDING})
     return table
+
+
+def load_intelligence_index_names(path: Path) -> list[str]:
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(raw, list):
+        records = raw
+    elif isinstance(raw, dict):
+        records = raw.get("intelligence_index")
+    else:
+        records = None
+    if not isinstance(records, list):
+        raise ValueError("状态文件缺少 intelligence_index 数组")
+    names: list[str] = []
+    known: set[str] = set()
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        name = str(record.get("model_name", "")).strip()
+        key = normalize_name(name)
+        if key and key not in known:
+            known.add(key)
+            names.append(name)
+    return names
+
+
+async def collect_model_info(
+    status_path: Path,
+    output_path: Path,
+    qwen_agent: QwenAgent,
+) -> list[dict[str, Any]]:
+    """Collect missing template rows and save after every successful search."""
+    names = load_intelligence_index_names(status_path)
+    existing: list[dict[str, Any]] = []
+    if output_path.exists():
+        value = json.loads(output_path.read_text(encoding="utf-8"))
+        if not isinstance(value, list):
+            raise ValueError("model_info.json 顶层必须是数组")
+        for record in value:
+            try:
+                existing.append(ModelInfo.model_validate(record).model_dump())
+            except (TypeError, ValidationError):
+                continue
+    by_name = {normalize_name(record["model_name"]): record for record in existing}
+    failures: list[str] = []
+    for name in names:
+        key = normalize_name(name)
+        if key in by_name:
+            continue
+        try:
+            by_name[key] = await qwen_agent.research_model_info(name)
+            atomic_write_json(
+                output_path,
+                [by_name[normalize_name(item)] for item in names
+                 if normalize_name(item) in by_name],
+            )
+            LOGGER.info("模型资料已记录：%s", name)
+        except Exception as exc:
+            failures.append(f"{name}: {exc}")
+            LOGGER.error("模型资料采集失败：%s：%s", name, exc)
+    result = [by_name[normalize_name(name)] for name in names if normalize_name(name) in by_name]
+    atomic_write_json(output_path, result)
+    if failures:
+        raise RuntimeError(f"{len(failures)} 个模型采集失败，可重新运行续采：" + "；".join(failures))
+    return result
 
 
 async def update_model_status_table(
@@ -390,13 +456,21 @@ def main() -> None:
     mode.add_argument("--daemon", action="store_true", help="启动常驻定时任务")
     mode.add_argument("--tau3-banking", action="store_true", help="仅更新 𝜏³-Banking 指标")
     mode.add_argument("--terminalbench-4-0", action="store_true", help="仅更新 Terminal-Bench 4.0 指标")
+    mode.add_argument("--model-info", action="store_true", help="联网采集模型导入模板 B-T 列资料")
     parser.add_argument("--data-dir", default="data", help="状态和报告保存目录")
     parser.add_argument("--status-table", default=MODEL_STATUS_FILENAME, help="模型信息状态表路径")
+    parser.add_argument("--model-info-output", default=MODEL_INFO_FILENAME, help="模型资料 JSON 输出路径")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     data_dir = Path(args.data_dir).resolve()
     status_path = Path(args.status_table).resolve()
-    if args.tau3_banking or args.terminalbench_4_0:
+    if args.model_info:
+        asyncio.run(collect_model_info(
+            status_path,
+            Path(args.model_info_output).resolve(),
+            QwenAgent(get_settings()),
+        ))
+    elif args.tau3_banking or args.terminalbench_4_0:
         settings = get_settings()
         client = ArtificialAnalysisClient(
             base_url=settings.artificial_analysis_base_url,

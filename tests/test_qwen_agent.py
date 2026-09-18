@@ -3,7 +3,7 @@ import unittest
 from types import SimpleNamespace
 from typing import Any
 
-from app.qwen_agent import QwenAgent
+from app.qwen_agent import ModelInfo, QwenAgent
 
 
 class FakeToolResult:
@@ -40,6 +40,27 @@ def completion(message: dict[str, Any]) -> dict[str, Any]:
 
 
 class QwenAgentTests(unittest.IsolatedAsyncioTestCase):
+    async def test_model_info_uses_web_search_and_keeps_requested_name(self) -> None:
+        class CapturingAgent(QwenAgent):
+            def __init__(self) -> None:
+                super().__init__(SimpleNamespace())
+                self.kwargs: dict[str, Any] = {}
+
+            async def _completion(self, *_: Any, **kwargs: Any) -> dict[str, Any]:
+                self.kwargs = kwargs
+                record = {field: None for field in ModelInfo.model_fields}
+                record["model_name"] = "model changed by response"
+                return completion({"content": json.dumps(record)})
+
+        agent = CapturingAgent()
+
+        record = await agent.research_model_info("Demo 2")
+
+        self.assertTrue(agent.kwargs["json_mode"])
+        self.assertTrue(agent.kwargs["web_search"])
+        self.assertEqual(record["model_name"], "Demo 2")
+        self.assertEqual(set(record), set(ModelInfo.model_fields))
+
     async def test_discovery_calls_latest_and_uses_real_item(self) -> None:
         arguments = {"window": "7d", "mode": "all", "category": "ai-models", "limit": 30}
         agent = StubQwenAgent(

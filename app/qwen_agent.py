@@ -23,6 +23,33 @@ class ReleaseExtraction(BaseModel):
     models: list[ReleasedModel]
 
 
+class ModelInfo(BaseModel):
+    """One row of the import template, from columns A through T."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    model_name: str = Field(min_length=2, max_length=200)
+    open_source_attribute: str | None
+    vendor_or_organization: str | None
+    model_series: str | None
+    release_or_api_url: str | None
+    release_date: str | None
+    model_architecture: str | None
+    region: str | None
+    bank_applicable_scenarios: str | None
+    minimum_gpu_and_count: str | None
+    minimum_context_length: str | None
+    minimum_concurrency: str | None
+    recommended_gpu_and_count: str | None
+    recommended_context_length: str | None
+    recommended_concurrency: str | None
+    license: str | None
+    total_parameters_b: str | None
+    active_parameters_b: str | None
+    input_modalities: str | None
+    output_modalities: str | None
+
+
 LATEST_TOOL = {
     "type": "function",
     "function": {
@@ -77,6 +104,7 @@ class QwenAgent:
         tools: list[dict[str, Any]] | None = None,
         tool_choice: dict[str, Any] | None = None,
         json_mode: bool = False,
+        web_search: bool = False,
     ) -> dict[str, Any]:
         if not self.settings.qwen_api_key:
             raise RuntimeError("缺少 QWEN_API_KEY，无法运行模型追踪任务")
@@ -92,6 +120,9 @@ class QwenAgent:
             payload["tool_choice"] = tool_choice
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
+        if web_search:
+            payload["enable_search"] = True
+            payload["search_options"] = {"forced_search": True}
 
         headers = {
             "Authorization": f"Bearer {self.settings.qwen_api_key}",
@@ -109,6 +140,43 @@ class QwenAgent:
                     response.raise_for_status()
                 await asyncio.sleep(min(2**attempt, 4))
         raise RuntimeError("Qwen 请求未返回结果")
+
+    async def research_model_info(self, model_name: str) -> dict[str, Any]:
+        """Use Qwen web search to fill one A-T import-template row."""
+        system = (
+            "你是严谨的 AI 模型资料研究员。必须联网搜索，并优先采用模型厂商官网、官方文档、"
+            "官方模型卡和官方代码仓库；找不到可靠依据的字段必须返回 null，不得猜测。"
+            "只研究用户指定的精确模型型号，不得把同系列其他型号的数据混入。"
+            "开源属性仅填写‘开源’或‘闭源’；发布日期使用 YYYY-MM-DD。"
+            "release_or_api_url：开源模型填写官方权重或发布地址，闭源模型填写官方 API 调用文档地址。"
+            "region 填写厂商或机构所属国家/地区。bank_applicable_scenarios 填写适合银行内部使用的场景。"
+            "最低和推荐部署要求均分别填写英伟达 GPU 型号及卡数、上下文长度和并发；"
+            "闭源且仅提供 API 的模型，GPU 字段填写‘不适用（仅API）’，公开限制不存在时填 null。"
+            "total_parameters_b 和 active_parameters_b 以十亿参数（B）为单位，只填写数值字符串；"
+            "Dense 模型的激活参数可与总参数相同。输入、输出模态用中文逗号分隔。"
+        )
+        user = (
+            f"研究模型：{model_name}。只输出一个 JSON 对象，且必须恰好包含以下字段："
+            "model_name, open_source_attribute, vendor_or_organization, model_series, "
+            "release_or_api_url, release_date, model_architecture, region, "
+            "bank_applicable_scenarios, minimum_gpu_and_count, minimum_context_length, "
+            "minimum_concurrency, recommended_gpu_and_count, recommended_context_length, "
+            "recommended_concurrency, license, total_parameters_b, active_parameters_b, "
+            "input_modalities, output_modalities。model_name 必须保持用户给出的原文。"
+        )
+        message = _message(
+            await self._completion(
+                [{"role": "system", "content": system}, {"role": "user", "content": user}],
+                json_mode=True,
+                web_search=True,
+            )
+        )
+        try:
+            info = ModelInfo.model_validate(_json_content(message))
+        except ValidationError as exc:
+            raise RuntimeError(f"Qwen 模型资料结果不符合 Schema：{exc}") from exc
+        info.model_name = model_name
+        return info.model_dump()
 
     async def discover_model_releases(self, mcp_client: AIHotMCPClient) -> list[dict[str, Any]]:
         """让 Qwen 调用 AIHOT MCP，并从真实返回项中抽取正式发布的模型。"""

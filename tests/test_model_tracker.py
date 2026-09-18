@@ -5,7 +5,17 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from app.model_tracker import normalize_name, scan_once, update_model_status_table, update_tau_banking_status_table, update_terminalbench_status_table, write_markdown
+from app.model_tracker import (
+    collect_model_info,
+    load_intelligence_index_names,
+    normalize_name,
+    scan_once,
+    update_model_status_table,
+    update_tau_banking_status_table,
+    update_terminalbench_status_table,
+    write_markdown,
+)
+from app.qwen_agent import ModelInfo
 
 
 class FakeAAClient:
@@ -47,6 +57,58 @@ class ModelTrackerExtractionTests(unittest.TestCase):
             write_markdown(path, "2026-09-11", [model])
             report = path.read_text(encoding="utf-8")
         self.assertIn("| 53 | 27 K | 8.2 分钟 |", report)
+
+    def test_loads_only_unique_intelligence_index_names(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "status.json"
+            path.write_text(json.dumps({
+                "intelligence_index": [
+                    {"model_name": "Demo-2"},
+                    {"model_name": "demo 2"},
+                    {"model_name": "Other"},
+                ],
+                "terminalbench-4-0": [{"model_name": "Ignored"}],
+            }), encoding="utf-8")
+
+            names = load_intelligence_index_names(path)
+
+        self.assertEqual(names, ["Demo-2", "Other"])
+
+
+class ModelInfoTests(unittest.IsolatedAsyncioTestCase):
+    async def test_collection_resumes_and_writes_in_status_order(self) -> None:
+        def record(name: str) -> dict:
+            value = {field: None for field in ModelInfo.model_fields}
+            value["model_name"] = name
+            return value
+
+        class FakeAgent:
+            def __init__(self) -> None:
+                self.requested: list[str] = []
+
+            async def research_model_info(self, name: str) -> dict:
+                self.requested.append(name)
+                return record(name)
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            status_path = root / "status.json"
+            output_path = root / "model_info.json"
+            status_path.write_text(json.dumps({
+                "intelligence_index": [
+                    {"model_name": "Existing"},
+                    {"model_name": "New Model"},
+                ]
+            }), encoding="utf-8")
+            output_path.write_text(json.dumps([record("Existing")]), encoding="utf-8")
+            agent = FakeAgent()
+
+            result = await collect_model_info(status_path, output_path, agent)
+            saved = json.loads(output_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(agent.requested, ["New Model"])
+        self.assertEqual([item["model_name"] for item in result], ["Existing", "New Model"])
+        self.assertEqual(saved, result)
 
 
 class ModelStatusTests(unittest.IsolatedAsyncioTestCase):
