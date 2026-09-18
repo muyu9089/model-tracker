@@ -146,13 +146,7 @@ python -m app.model_tracker --terminalbench-4-0
 python -m app.model_tracker --tau3-banking
 ```
 
-按 `存量模型信息记录状态.json` 的 `intelligence_index` 模型清单，调用 Qwen 联网搜索并采集“导入模板.xlsx”中 B–T 列资料：
-
-```bash
-python -m app.model_tracker --model-info
-```
-
-结果默认写入 `model_info.json`。每个模型成功后立即保存；再次运行会跳过已有完整记录，只重试缺失项。可用 `--model-info-output` 指定其他输出路径。
+每周扫描发现新增模型时，会立即调用 Qwen 联网搜索并采集“导入模板.xlsx”中 B–T 列资料，默认写入 `model_info.json`。没有新增模型时不会执行 model-info 获取，存量模型也不会重新查询。每个新模型成功后立即保存；可用 `--model-info-output` 指定其他输出路径。
 
 启动常驻任务：
 

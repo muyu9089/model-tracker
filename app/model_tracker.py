@@ -84,36 +84,12 @@ def load_status_table(path: Path) -> dict[str, list[dict[str, Any]]]:
     return table
 
 
-def load_intelligence_index_names(path: Path) -> list[str]:
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    if isinstance(raw, list):
-        records = raw
-    elif isinstance(raw, dict):
-        records = raw.get("intelligence_index")
-    else:
-        records = None
-    if not isinstance(records, list):
-        raise ValueError("状态文件缺少 intelligence_index 数组")
-    names: list[str] = []
-    known: set[str] = set()
-    for record in records:
-        if not isinstance(record, dict):
-            continue
-        name = str(record.get("model_name", "")).strip()
-        key = normalize_name(name)
-        if key and key not in known:
-            known.add(key)
-            names.append(name)
-    return names
-
-
 async def collect_model_info(
-    status_path: Path,
+    names: list[str],
     output_path: Path,
     qwen_agent: QwenAgent,
 ) -> list[dict[str, Any]]:
-    """Collect missing template rows and save after every successful search."""
-    names = load_intelligence_index_names(status_path)
+    """Collect model info only for names discovered by the current scan."""
     existing: list[dict[str, Any]] = []
     if output_path.exists():
         value = json.loads(output_path.read_text(encoding="utf-8"))
@@ -125,6 +101,7 @@ async def collect_model_info(
             except (TypeError, ValidationError):
                 continue
     by_name = {normalize_name(record["model_name"]): record for record in existing}
+    result = list(existing)
     failures: list[str] = []
     for name in names:
         key = normalize_name(name)
@@ -132,16 +109,12 @@ async def collect_model_info(
             continue
         try:
             by_name[key] = await qwen_agent.research_model_info(name)
-            atomic_write_json(
-                output_path,
-                [by_name[normalize_name(item)] for item in names
-                 if normalize_name(item) in by_name],
-            )
+            result.append(by_name[key])
+            atomic_write_json(output_path, result)
             LOGGER.info("模型资料已记录：%s", name)
         except Exception as exc:
             failures.append(f"{name}: {exc}")
             LOGGER.error("模型资料采集失败：%s：%s", name, exc)
-    result = [by_name[normalize_name(name)] for name in names if normalize_name(name) in by_name]
     atomic_write_json(output_path, result)
     if failures:
         raise RuntimeError(f"{len(failures)} 个模型采集失败，可重新运行续采：" + "；".join(failures))
@@ -348,10 +321,15 @@ def write_markdown(path: Path, run_at: str, models: list[dict[str, Any]]) -> Non
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-async def scan_once(data_dir: Path, status_path: Path | None = None) -> list[dict[str, Any]]:
+async def scan_once(
+    data_dir: Path,
+    status_path: Path | None = None,
+    model_info_path: Path | None = None,
+) -> list[dict[str, Any]]:
     timezone = ZoneInfo("Asia/Shanghai")
     now = datetime.now(timezone)
     status_path = status_path or Path(MODEL_STATUS_FILENAME).resolve()
+    model_info_path = model_info_path or Path(MODEL_INFO_FILENAME).resolve()
     status_table = load_status_table(status_path)
     known_models = {
         normalize_name(str(record.get("model_name", "")))
@@ -383,6 +361,13 @@ async def scan_once(data_dir: Path, status_path: Path | None = None) -> list[dic
         }
         seen[key] = record
         new_models.append(record)
+
+    if new_models:
+        await collect_model_info(
+            [model["name"] for model in new_models],
+            model_info_path,
+            qwen_agent,
+        )
 
     aa_client = None
     if settings.artificial_analysis_enabled:
@@ -421,7 +406,7 @@ async def scan_once(data_dir: Path, status_path: Path | None = None) -> list[dic
     return new_models
 
 
-async def run_daemon(data_dir: Path, status_path: Path) -> None:
+async def run_daemon(data_dir: Path, status_path: Path, model_info_path: Path) -> None:
     settings = get_settings()
     scheduler = AsyncIOScheduler(timezone=settings.tracker_timezone)
     scheduler.add_job(
@@ -432,7 +417,7 @@ async def run_daemon(data_dir: Path, status_path: Path) -> None:
             minute=settings.tracker_minute,
             timezone=settings.tracker_timezone,
         ),
-        args=[data_dir, status_path],
+        args=[data_dir, status_path, model_info_path],
         id="weekly-model-scan",
         replace_existing=True,
         max_instances=1,
@@ -456,7 +441,6 @@ def main() -> None:
     mode.add_argument("--daemon", action="store_true", help="启动常驻定时任务")
     mode.add_argument("--tau3-banking", action="store_true", help="仅更新 𝜏³-Banking 指标")
     mode.add_argument("--terminalbench-4-0", action="store_true", help="仅更新 Terminal-Bench 4.0 指标")
-    mode.add_argument("--model-info", action="store_true", help="联网采集模型导入模板 B-T 列资料")
     parser.add_argument("--data-dir", default="data", help="状态和报告保存目录")
     parser.add_argument("--status-table", default=MODEL_STATUS_FILENAME, help="模型信息状态表路径")
     parser.add_argument("--model-info-output", default=MODEL_INFO_FILENAME, help="模型资料 JSON 输出路径")
@@ -464,13 +448,8 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     data_dir = Path(args.data_dir).resolve()
     status_path = Path(args.status_table).resolve()
-    if args.model_info:
-        asyncio.run(collect_model_info(
-            status_path,
-            Path(args.model_info_output).resolve(),
-            QwenAgent(get_settings()),
-        ))
-    elif args.tau3_banking or args.terminalbench_4_0:
+    model_info_path = Path(args.model_info_output).resolve()
+    if args.tau3_banking or args.terminalbench_4_0:
         settings = get_settings()
         client = ArtificialAnalysisClient(
             base_url=settings.artificial_analysis_base_url,
@@ -485,9 +464,9 @@ def main() -> None:
                 status_path, client, data_dir / TERMINALBENCH_DATA_FILENAME
             ))
     elif args.once:
-        asyncio.run(scan_once(data_dir, status_path))
+        asyncio.run(scan_once(data_dir, status_path, model_info_path))
     else:
-        asyncio.run(run_daemon(data_dir, status_path))
+        asyncio.run(run_daemon(data_dir, status_path, model_info_path))
 
 
 if __name__ == "__main__":

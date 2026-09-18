@@ -7,7 +7,6 @@ from unittest.mock import patch
 
 from app.model_tracker import (
     collect_model_info,
-    load_intelligence_index_names,
     normalize_name,
     scan_once,
     update_model_status_table,
@@ -58,25 +57,8 @@ class ModelTrackerExtractionTests(unittest.TestCase):
             report = path.read_text(encoding="utf-8")
         self.assertIn("| 53 | 27 K | 8.2 分钟 |", report)
 
-    def test_loads_only_unique_intelligence_index_names(self) -> None:
-        with TemporaryDirectory() as directory:
-            path = Path(directory) / "status.json"
-            path.write_text(json.dumps({
-                "intelligence_index": [
-                    {"model_name": "Demo-2"},
-                    {"model_name": "demo 2"},
-                    {"model_name": "Other"},
-                ],
-                "terminalbench-4-0": [{"model_name": "Ignored"}],
-            }), encoding="utf-8")
-
-            names = load_intelligence_index_names(path)
-
-        self.assertEqual(names, ["Demo-2", "Other"])
-
-
 class ModelInfoTests(unittest.IsolatedAsyncioTestCase):
-    async def test_collection_resumes_and_writes_in_status_order(self) -> None:
+    async def test_collection_queries_only_new_names_and_preserves_existing(self) -> None:
         def record(name: str) -> dict:
             value = {field: None for field in ModelInfo.model_fields}
             value["model_name"] = name
@@ -92,18 +74,11 @@ class ModelInfoTests(unittest.IsolatedAsyncioTestCase):
 
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            status_path = root / "status.json"
             output_path = root / "model_info.json"
-            status_path.write_text(json.dumps({
-                "intelligence_index": [
-                    {"model_name": "Existing"},
-                    {"model_name": "New Model"},
-                ]
-            }), encoding="utf-8")
             output_path.write_text(json.dumps([record("Existing")]), encoding="utf-8")
             agent = FakeAgent()
 
-            result = await collect_model_info(status_path, output_path, agent)
+            result = await collect_model_info(["New Model"], output_path, agent)
             saved = json.loads(output_path.read_text(encoding="utf-8"))
 
         self.assertEqual(agent.requested, ["New Model"])
@@ -112,6 +87,45 @@ class ModelInfoTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ModelStatusTests(unittest.IsolatedAsyncioTestCase):
+    async def test_scan_collects_model_info_only_for_new_models(self) -> None:
+        releases = [
+            {"name": "Existing", "item": {"id": "1", "title": "Existing released"}},
+            {"name": "New Model", "item": {"id": "2", "title": "New released"}},
+        ]
+
+        class FakeAgent:
+            requested: list[str] = []
+
+            def __init__(self, settings: object) -> None:
+                pass
+
+            async def discover_model_releases(self, client: object) -> list[dict]:
+                return releases
+
+            async def research_model_info(self, name: str) -> dict:
+                self.requested.append(name)
+                value = {field: None for field in ModelInfo.model_fields}
+                value["model_name"] = name
+                return value
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            status_path = root / "status.json"
+            model_info_path = root / "model_info.json"
+            status_path.write_text(json.dumps({
+                "intelligence_index": [{"model_name": "Existing", "record_status": "已记录"}],
+            }), encoding="utf-8")
+            settings = SimpleNamespace(artificial_analysis_enabled=False)
+            with patch("app.model_tracker.get_settings", return_value=settings), patch(
+                "app.model_tracker.QwenAgent", FakeAgent
+            ):
+                await scan_once(root / "data", status_path, model_info_path)
+
+            saved = json.loads(model_info_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(FakeAgent.requested, ["New Model"])
+        self.assertEqual([record["model_name"] for record in saved], ["New Model"])
+
     async def test_terminalbench_updates_its_layer_and_separate_data(self) -> None:
         class FakeTerminalClient:
             async def fetch_terminalbench_html(self) -> str:
