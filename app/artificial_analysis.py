@@ -362,6 +362,8 @@ class ArtificialAnalysisClient:
                 "slug": selected["slug"],
                 "match_method": method,
                 "tau3_banking_score": round_half_up(selected["tauBanking"] * 100, 1),
+                "output_tokens": round_half_up(tokens_per_task),
+                "time_seconds": tokens_per_task / speed,
                 "output_tokens_per_task": format_thousands(tokens_per_task),
                 "time_per_task_minutes": round_half_up(tokens_per_task / speed / 60, 1),
                 "source_url": f"{self.base_url.rstrip('/')}/evaluations/tau3-banking",
@@ -403,6 +405,8 @@ class ArtificialAnalysisClient:
                 "slug": selected["slug"],
                 "match_method": method,
                 "terminalbench_4_0_score": round_half_up(selected["terminalBench40"] * 100, 1),
+                "output_tokens": round_half_up(tokens_per_task),
+                "time_seconds": tokens_per_task / speed,
                 "output_tokens_per_task": format_thousands(tokens_per_task),
                 "time_per_task_minutes": round_half_up(tokens_per_task / speed / 60, 1),
                 "source_url": f"{self.base_url.rstrip('/')}/evaluations/terminalbench-4-0",
@@ -465,6 +469,8 @@ class ArtificialAnalysisClient:
                     "reasoning_effort": effort.get("label") or effort.get("slug"),
                     "reasoning_effort_level": effort.get("level"),
                     "intelligence_index": round_half_up(metric_record.get("intelligenceIndex")),
+                    "output_tokens": round_half_up(output_tokens),
+                    "time_seconds": time_seconds,
                     "output_tokens_per_task": format_thousands(output_tokens),
                     "time_per_task_minutes": round_half_up(time_seconds / 60, 1)
                     if isinstance(time_seconds, (int, float))

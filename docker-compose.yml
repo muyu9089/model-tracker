@@ -8,7 +8,21 @@ services:
   model-tracker:
     build: .
     env_file: .env
-    command: ["python", "-m", "app.model_tracker", "--daemon", "--data-dir", "/app/data"]
+    command:
+      - python
+      - -m
+      - app.model_tracker
+      - --daemon
+      - --data-dir
+      - /app/data
+      - --database
+      - /app/data/model_tracker.db
+      - --status-table
+      - /app/data/存量模型信息记录状态.json
+      - --model-info-output
+      - /app/data/model_info.json
+      - --export-dir
+      - /app/data/exports
     volumes:
       - ./data:/app/data
     restart: unless-stopped

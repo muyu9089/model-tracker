@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     tracker_day_of_week: str = "mon"
     tracker_hour: int = Field(default=9, ge=0, le=23)
     tracker_minute: int = Field(default=0, ge=0, le=59)
+    tracker_database_path: str = "data/model_tracker.db"
+    tracker_export_dir: str = "data/exports"
+    tracker_json_export_enabled: bool = True
     artificial_analysis_enabled: bool = True
     artificial_analysis_base_url: str = "https://artificialanalysis.ai"
     artificial_analysis_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
