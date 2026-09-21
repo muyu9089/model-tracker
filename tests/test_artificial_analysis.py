@@ -82,6 +82,7 @@ class TauBankingClientTests(unittest.IsolatedAsyncioTestCase):
     async def test_enrichment_uses_97_tasks_and_marks_missing_models_unmatched(self) -> None:
         record = {
             "id": "1", "slug": "qwen3-8-max", "name": "Qwen3.8 Max",
+            "parameters": 235, "effort": {"label": "max", "level": 60},
             "tauBanking": 0.51340206185567,
             "canonicalEvalTokenCounts": {"tauBanking": {"answer": 280112, "reasoning": 639858}},
             "medianCanonicalAnswerOutputSpeed": 52.3251837412224,
@@ -93,12 +94,15 @@ class TauBankingClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(results["Qwen3.8 Max"]["tau3_banking_score"], 51.3)
         self.assertEqual(results["Qwen3.8 Max"]["output_tokens_per_task"], "9 K")
         self.assertEqual(results["Qwen3.8 Max"]["time_per_task_minutes"], 3.0)
+        self.assertEqual(results["Qwen3.8 Max"]["parameters_billions"], 235.0)
+        self.assertEqual(results["Qwen3.8 Max"]["reasoning_effort"], "max")
         self.assertFalse(results["Qwen3.7 Max"]["matched"])
         self.assertFalse(results["Unrelated Model"]["matched"])
 
     async def test_terminalbench_enrichment_uses_66_tasks(self) -> None:
         record = {
             "id": "1", "slug": "demo-high", "name": "Demo (high)",
+            "parameters": 70,
             "terminalBench40": 0.5,
             "canonicalEvalTokenCounts": {
                 "terminalBench40": {"answer": 66000, "reasoning": 66000}
@@ -112,6 +116,8 @@ class TauBankingClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(results["Demo"]["terminalbench_4_0_score"], 50.0)
         self.assertEqual(results["Demo"]["output_tokens_per_task"], "2 K")
         self.assertEqual(results["Demo"]["time_per_task_minutes"], 0.3)
+        self.assertEqual(results["Demo"]["parameters_billions"], 70.0)
+        self.assertEqual(results["Demo"]["reasoning_effort"], "high")
         self.assertFalse(results["Missing"]["matched"])
 
     def test_largest_parameters_then_highest_effort(self) -> None:

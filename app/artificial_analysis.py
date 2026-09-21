@@ -217,6 +217,15 @@ def _effort_level(model: dict[str, Any]) -> float:
     return float(max((level for label, level in labels.items() if label in text), default=-1))
 
 
+def _reasoning_effort(model: dict[str, Any]) -> str | None:
+    effort = model.get("effort")
+    if isinstance(effort, dict):
+        return effort.get("label") or effort.get("slug")
+    text = f"{model.get('name', '')} {model.get('slug', '')}".lower()
+    return next((label for label in ("minimal", "medium", "xhigh", "high", "low", "max", "none")
+                 if re.search(rf"\b{label}\b", text)), None)
+
+
 def _identity_values(model: dict[str, Any]) -> list[str]:
     release = model.get("release") or {}
     full_name = str(model.get("name", ""))
@@ -356,10 +365,13 @@ class ArtificialAnalysisClient:
                 results[name] = {"matched": False, "error": "已匹配模型，但缺少完整 token 或速度数据"}
                 continue
             tokens_per_task = (answer + reasoning) / 97
+            parameters = _parameter_billions(selected)
             results[name] = {
                 "matched": True,
                 "model_name": selected["name"],
                 "slug": selected["slug"],
+                "parameters_billions": parameters if parameters >= 0 else None,
+                "reasoning_effort": _reasoning_effort(selected),
                 "match_method": method,
                 "tau3_banking_score": round_half_up(selected["tauBanking"] * 100, 1),
                 "output_tokens": round_half_up(tokens_per_task),
@@ -399,10 +411,13 @@ class ArtificialAnalysisClient:
                 results[name] = {"matched": False, "error": "已匹配模型，但缺少完整 token 或速度数据"}
                 continue
             tokens_per_task = (answer + reasoning) / 66
+            parameters = _parameter_billions(selected)
             results[name] = {
                 "matched": True,
                 "model_name": selected["name"],
                 "slug": selected["slug"],
+                "parameters_billions": parameters if parameters >= 0 else None,
+                "reasoning_effort": _reasoning_effort(selected),
                 "match_method": method,
                 "terminalbench_4_0_score": round_half_up(selected["terminalBench40"] * 100, 1),
                 "output_tokens": round_half_up(tokens_per_task),

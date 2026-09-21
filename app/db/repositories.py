@@ -136,7 +136,12 @@ class TrackerRepository:
                 """SELECT m.model_name FROM benchmark_states s
                    JOIN models m ON m.id = s.model_id
                    JOIN benchmarks b ON b.id = s.benchmark_id
-                   WHERE b.code = ? AND s.status != 'recorded' ORDER BY m.id""",
+                   LEFT JOIN benchmark_results r
+                     ON r.model_id = s.model_id AND r.benchmark_id = s.benchmark_id
+                   WHERE b.code = ? AND (
+                     s.status != 'recorded' OR r.matched_model_name IS NULL
+                     OR r.matched_slug IS NULL OR r.match_method IS NULL OR r.source_url IS NULL
+                   ) ORDER BY m.id""",
                 (benchmark_code,),
             )]
 

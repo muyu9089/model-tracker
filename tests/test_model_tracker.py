@@ -39,6 +39,25 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(first_id, second_id)
         self.assertEqual(state_count, 3)
 
+    def test_recorded_result_without_match_metadata_is_refreshed(self) -> None:
+        with TemporaryDirectory() as directory:
+            repository = TrackerRepository(Path(directory) / "tracker.db")
+            repository.add_model({"name": "Demo"})
+            repository.save_benchmark_metrics(
+                "intelligence_index", ["Demo"], {"Demo": {
+                    "matched": True, "intelligence_index": 42,
+                }}
+            )
+            self.assertEqual(repository.pending_names("intelligence_index"), ["Demo"])
+            repository.save_benchmark_metrics(
+                "intelligence_index", ["Demo"], {"Demo": {
+                    "matched": True, "intelligence_index": 42,
+                    "model_name": "Demo (high)", "slug": "demo-high",
+                    "match_method": "family", "source_url": "https://example.test/demo-high",
+                }}
+            )
+            self.assertEqual(repository.pending_names("intelligence_index"), [])
+
     def test_connection_enables_foreign_keys_and_source_change_resets_one_benchmark(self) -> None:
         with TemporaryDirectory() as directory:
             repository = TrackerRepository(Path(directory) / "tracker.db")
