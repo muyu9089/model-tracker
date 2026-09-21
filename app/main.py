@@ -1,15 +1,30 @@
 from datetime import date
+from html import escape
+from pathlib import Path
 from typing import Any, Literal
 
 import anyio
 from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi.responses import HTMLResponse
 from mcp.shared.exceptions import McpError
 from pydantic import BaseModel, Field
 
 from .config import Settings, get_settings
+from .db import TrackerRepository
 from .mcp_client import AIHotMCPClient
 
 app = FastAPI(title="AIHot MCP Gateway", version="1.0.0")
+
+DATABASE_TABLES = {
+    "models": "模型",
+    "model_profiles": "模型详情",
+    "benchmarks": "评测项",
+    "benchmark_states": "评测状态",
+    "benchmark_results": "评测结果",
+    "scan_runs": "扫描记录",
+    "scan_run_models": "扫描模型",
+    "source_versions": "数据源版本",
+}
 
 
 class ToolCallRequest(BaseModel):
@@ -61,6 +76,55 @@ def raise_gateway_error(exc: Exception) -> None:
     if isinstance(exc, (McpError, OSError, anyio.BrokenResourceError)):
         raise HTTPException(status_code=502, detail=f"AIHot MCP 调用失败: {exc}") from exc
     raise exc
+
+
+def _cell(value: Any) -> str:
+    text = "—" if value is None else str(value)
+    safe = escape(text)
+    if len(text) <= 160:
+        return safe
+    return f"<details><summary>{escape(text[:80])}…</summary><pre>{safe}</pre></details>"
+
+
+def _database_page(repository: TrackerRepository, table: str) -> str:
+    counts = {
+        name: repository.rows(f'SELECT COUNT(*) AS count FROM "{name}"')[0]["count"]
+        for name in DATABASE_TABLES
+    }
+    columns = [row["name"] for row in repository.rows(f'PRAGMA table_info("{table}")')]
+    rows = repository.rows(f'SELECT * FROM "{table}" ORDER BY rowid DESC LIMIT 200')
+    tabs = "".join(
+        f'<a class="{"active" if name == table else ""}" href="/?table={name}">'
+        f'{label}<small>{counts[name]}</small></a>'
+        for name, label in DATABASE_TABLES.items()
+    )
+    header = "".join(f"<th>{escape(column)}</th>" for column in columns)
+    body = "".join(
+        "<tr>" + "".join(f"<td>{_cell(row[column])}</td>" for column in columns) + "</tr>"
+        for row in rows
+    ) or f'<tr><td class="empty" colspan="{max(1, len(columns))}">暂无数据</td></tr>'
+    return f"""<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>模型数据库</title><style>
+*{{box-sizing:border-box}}body{{margin:0;background:#f5f7fb;color:#182230;font:14px system-ui,sans-serif}}
+main{{max-width:1600px;margin:auto;padding:32px}}h1{{margin:0 0 6px;font-size:26px}}p{{margin:0 0 24px;color:#667085}}
+nav{{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}}nav a{{display:flex;gap:8px;padding:9px 12px;border:1px solid #d0d5dd;border-radius:8px;background:white;color:#344054;text-decoration:none}}
+nav a.active{{background:#155eef;color:white;border-color:#155eef}}small{{opacity:.75}}section{{overflow:auto;border:1px solid #e4e7ec;border-radius:10px;background:white}}
+table{{width:100%;border-collapse:collapse;white-space:nowrap}}th,td{{padding:11px 14px;border-bottom:1px solid #eaecf0;text-align:left;vertical-align:top}}th{{position:sticky;top:0;background:#f9fafb;color:#475467;font-size:12px}}
+td{{max-width:420px;overflow:hidden;text-overflow:ellipsis}}tr:last-child td{{border-bottom:0}}tr:hover td{{background:#f9fafb}}details{{white-space:normal}}summary{{cursor:pointer}}pre{{max-width:800px;white-space:pre-wrap;word-break:break-word}}.empty{{padding:40px;text-align:center;color:#98a2b3}}
+</style></head><body><main><h1>模型数据库</h1><p>{DATABASE_TABLES[table]} · 最新 200 行 · 只读</p><nav>{tabs}</nav>
+<section><table><thead><tr>{header}</tr></thead><tbody>{body}</tbody></table></section></main></body></html>"""
+
+
+@app.get("/", response_class=HTMLResponse, include_in_schema=False)
+def database_view(
+    table: str = Query(default="models"),
+    settings: Settings = Depends(get_settings),
+) -> HTMLResponse:
+    if table not in DATABASE_TABLES:
+        raise HTTPException(status_code=404, detail="数据表不存在")
+    repository = TrackerRepository(Path(settings.tracker_database_path).resolve())
+    return HTMLResponse(_database_page(repository, table))
 
 
 @app.get("/health")

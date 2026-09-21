@@ -22,7 +22,7 @@ cp .env.example .env  # Windows 可手动复制
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-启动后打开 `http://127.0.0.1:8000/docs` 可直接调试。
+启动后打开 `http://127.0.0.1:8000/` 可查看模型数据库，打开 `http://127.0.0.1:8000/docs` 可直接调试 API。
 
 ## 使用流程
 
