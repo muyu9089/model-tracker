@@ -8,7 +8,7 @@ from unittest.mock import patch
 from app.db import TrackerRepository
 from app.exporters import JsonExporter
 from app.migration.import_legacy import import_legacy
-from app.model_tracker import scan_once
+from app.model_tracker import run_daemon, scan_once
 from app.qwen_agent import ModelInfo
 
 
@@ -165,6 +165,50 @@ class MigrationAndExportTests(unittest.TestCase):
 
 
 class ScanTests(unittest.IsolatedAsyncioTestCase):
+    async def test_daemon_starts_scheduler_and_web_server(self) -> None:
+        class FakeScheduler:
+            started = False
+            stopped = False
+
+            def add_job(self, *args: object, **kwargs: object) -> None:
+                pass
+
+            def start(self) -> None:
+                self.started = True
+
+            def shutdown(self, wait: bool) -> None:
+                self.stopped = not wait
+
+        class FakeServer:
+            served = False
+
+            async def serve(self) -> None:
+                self.served = True
+
+        scheduler = FakeScheduler()
+        server = FakeServer()
+        settings = SimpleNamespace(
+            tracker_timezone="Asia/Shanghai", tracker_day_of_week="mon",
+            tracker_hour=9, tracker_minute=0, tracker_web_host="0.0.0.0",
+            tracker_web_port=8000,
+        )
+        with TemporaryDirectory() as directory, patch(
+            "app.model_tracker.get_settings", return_value=settings
+        ), patch(
+            "app.model_tracker.AsyncIOScheduler", return_value=scheduler
+        ), patch(
+            "app.model_tracker.uvicorn.Server", return_value=server
+        ) as server_class:
+            root = Path(directory)
+            await run_daemon(root, root / "tracker.db", root / "status.json",
+                             root / "model_info.json", root / "exports", True)
+
+        config = server_class.call_args.args[0]
+        self.assertTrue(scheduler.started)
+        self.assertTrue(scheduler.stopped)
+        self.assertTrue(server.served)
+        self.assertEqual((config.host, config.port), ("0.0.0.0", 8000))
+
     async def test_scan_queries_profile_only_for_new_models(self) -> None:
         releases = [
             {"name": "Existing", "item": {"id": "1", "title": "Existing"}},

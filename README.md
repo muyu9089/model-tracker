@@ -170,6 +170,13 @@ python -m app.model_tracker --tau3-banking
 python -m app.model_tracker --daemon
 ```
 
+该命令会同时启动定时任务和 Web 页面/API，默认监听 `http://0.0.0.0:8000`。按模型
+`updated_at` 的 UTC 日期查询详情和全部评测数据：
+
+```bash
+curl "http://127.0.0.1:8000/models?date=2026-09-21"
+```
+
 默认每周一北京时间 09:00 执行。可以在 `.env` 中修改：
 
 ```dotenv
@@ -180,6 +187,8 @@ TRACKER_MINUTE=0
 TRACKER_DATABASE_PATH=data/model_tracker.db
 TRACKER_EXPORT_DIR=data/exports
 TRACKER_JSON_EXPORT_ENABLED=true
+TRACKER_WEB_HOST=0.0.0.0
+TRACKER_WEB_PORT=8000
 QWEN_API_KEY=replace-with-your-dashscope-api-key
 QWEN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 QWEN_MODEL=qwen3.8-flash

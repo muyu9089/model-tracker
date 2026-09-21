@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+import uvicorn
 
 from .artificial_analysis import ArtificialAnalysisClient, parse_index_update_text
 from .config import Settings, get_settings
@@ -183,6 +184,8 @@ async def run_daemon(
     export_dir: Path,
     export_json: bool,
 ) -> None:
+    from .main import app
+
     settings = get_settings()
     scheduler = AsyncIOScheduler(timezone=settings.tracker_timezone)
     scheduler.add_job(
@@ -200,7 +203,14 @@ async def run_daemon(
         coalesce=True,
     )
     scheduler.start()
-    await asyncio.Event().wait()
+    app.state.tracker_database_path = database_path
+    try:
+        await uvicorn.Server(uvicorn.Config(
+            app, host=settings.tracker_web_host, port=settings.tracker_web_port
+        )).serve()
+    finally:
+        scheduler.shutdown(wait=False)
+        del app.state.tracker_database_path
 
 
 def _paths(args: argparse.Namespace, settings: Settings) -> tuple[Path, ...]:
