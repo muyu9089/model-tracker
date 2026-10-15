@@ -21,6 +21,7 @@ from .qwen_agent import ModelInfo, QwenAgent
 
 
 LOGGER = logging.getLogger("aihot.model_tracker")
+SCAN_LOCK = asyncio.Lock()
 MODEL_STATUS_FILENAME = "存量模型信息记录状态.json"
 MODEL_INFO_FILENAME = "model_info.json"
 
@@ -104,6 +105,20 @@ def make_exporter(
 
 
 async def scan_once(
+    data_dir: Path,
+    database_path: Path | None = None,
+    status_path: Path | None = None,
+    model_info_path: Path | None = None,
+    export_dir: Path | None = None,
+    export_json: bool | None = None,
+) -> list[dict[str, Any]]:
+    async with SCAN_LOCK:
+        return await _scan_once(
+            data_dir, database_path, status_path, model_info_path, export_dir, export_json
+        )
+
+
+async def _scan_once(
     data_dir: Path,
     database_path: Path | None = None,
     status_path: Path | None = None,
@@ -204,6 +219,9 @@ async def run_daemon(
     )
     scheduler.start()
     app.state.tracker_database_path = database_path
+    app.state.tracker_scan_args = (
+        data_dir, database_path, status_path, model_info_path, export_dir, export_json
+    )
     try:
         await uvicorn.Server(uvicorn.Config(
             app, host=settings.tracker_web_host, port=settings.tracker_web_port
@@ -211,6 +229,7 @@ async def run_daemon(
     finally:
         scheduler.shutdown(wait=False)
         del app.state.tracker_database_path
+        del app.state.tracker_scan_args
 
 
 def _paths(args: argparse.Namespace, settings: Settings) -> tuple[Path, ...]:

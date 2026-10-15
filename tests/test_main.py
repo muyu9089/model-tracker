@@ -1,7 +1,7 @@
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
@@ -11,6 +11,37 @@ from app.main import app
 
 
 class DatabasePageTests(unittest.TestCase):
+    def test_manual_scan_requires_token_and_returns_new_models(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            settings = Settings(tracker_scan_token="test-secret")
+            app.dependency_overrides[get_settings] = lambda: settings
+            app.state.tracker_scan_args = (root, root / "tracker.db")
+            try:
+                with patch("app.model_tracker.scan_once", new_callable=AsyncMock) as scan:
+                    scan.return_value = [{"name": "New Model"}]
+                    client = TestClient(app)
+                    self.assertEqual(client.post("/models/scan").status_code, 401)
+                    self.assertEqual(scan.await_count, 0)
+                    with patch("app.model_tracker.SCAN_LOCK") as lock:
+                        lock.locked.return_value = True
+                        self.assertEqual(client.post(
+                            "/models/scan", headers={"X-Scan-Token": "test-secret"}
+                        ).status_code, 409)
+                    self.assertEqual(scan.await_count, 0)
+                    response = client.post(
+                        "/models/scan", headers={"X-Scan-Token": "test-secret"}
+                    )
+                    scan.assert_awaited_once_with(root, root / "tracker.db")
+            finally:
+                del app.state.tracker_scan_args
+                app.dependency_overrides.clear()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {
+            "count": 1, "models": [{"name": "New Model"}]
+        })
+
     def test_page_shows_database_rows_and_escapes_html(self) -> None:
         with TemporaryDirectory() as directory:
             database = Path(directory) / "tracker.db"

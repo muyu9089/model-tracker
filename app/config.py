@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     tracker_json_export_enabled: bool = True
     tracker_web_host: str = "0.0.0.0"
     tracker_web_port: int = Field(default=8000, ge=1, le=65535)
+    tracker_scan_token: str = ""
     artificial_analysis_enabled: bool = True
     artificial_analysis_base_url: str = "https://artificialanalysis.ai"
     artificial_analysis_timeout_seconds: float = Field(default=30.0, gt=0, le=300)

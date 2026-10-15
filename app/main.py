@@ -1,10 +1,11 @@
 from datetime import date
 from html import escape
 from pathlib import Path
+from secrets import compare_digest
 from typing import Any, Literal
 
 import anyio
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from mcp.shared.exceptions import McpError
 from pydantic import BaseModel, Field
@@ -196,6 +197,25 @@ def models_by_updated_date(
 ) -> dict[str, Any]:
     models = _models_updated_on(repository, updated_date)
     return {"date": updated_date.isoformat(), "count": len(models), "models": models}
+
+
+@app.post("/models/scan")
+async def scan_models(
+    request: Request,
+    x_scan_token: str = Header(default=""),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, Any]:
+    if not settings.tracker_scan_token:
+        raise HTTPException(status_code=503, detail="未配置 TRACKER_SCAN_TOKEN")
+    if not compare_digest(x_scan_token.encode(), settings.tracker_scan_token.encode()):
+        raise HTTPException(status_code=401, detail="无效的扫描令牌")
+    from .model_tracker import SCAN_LOCK, scan_once
+
+    if SCAN_LOCK.locked():
+        raise HTTPException(status_code=409, detail="扫描正在进行中")
+    args = getattr(request.app.state, "tracker_scan_args", (Path("data").resolve(),))
+    models = await scan_once(*args)
+    return {"count": len(models), "models": models}
 
 
 @app.get("/health")

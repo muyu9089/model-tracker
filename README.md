@@ -56,6 +56,7 @@ curl -X POST http://127.0.0.1:8000/fetch \
 | GET | `/tools` | 获取 MCP 工具列表和输入结构 |
 | POST | `/call/{tool_name}` | 调用指定 MCP 工具 |
 | POST | `/fetch` | 通过请求体指定工具并获取信息 |
+| POST | `/models/scan` | 手动执行一次完整模型扫描（需要扫描令牌） |
 | GET | `/news/latest` | 获取 24 小时或 7 天最新 AI 资讯 |
 | POST | `/news/search` | 搜索最近 7 天的 AI 资讯 |
 | GET | `/topics/hot` | 获取当前 AI 热点榜 |
@@ -170,7 +171,15 @@ python -m app.model_tracker --tau3-banking
 python -m app.model_tracker --daemon
 ```
 
-该命令会同时启动定时任务和 Web 页面/API，默认监听 `http://0.0.0.0:8000`。按模型
+设置 `.env` 中的 `TRACKER_SCAN_TOKEN` 为随机密钥后，可手动触发一次完整扫描（包括新增模型资料、评测指标和导出）：
+
+```bash
+curl -X POST http://127.0.0.1:8000/models/scan -H "X-Scan-Token: 你的随机密钥"
+```
+
+请求完成后返回本次新增模型的数量和记录；已有扫描正在运行时返回 HTTP 409。未配置令牌时接口返回 HTTP 503。对外访问时请通过 HTTPS 发送令牌。
+
+`--daemon` 命令会同时启动定时任务和 Web 页面/API，默认监听 `http://0.0.0.0:8000`。按模型
 `updated_at` 的 UTC 日期查询详情和全部评测数据：
 
 ```bash
