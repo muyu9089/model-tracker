@@ -100,18 +100,55 @@ def _database_page(repository: TrackerRepository, table: str) -> str:
         name: repository.rows(f'SELECT COUNT(*) AS count FROM "{name}"')[0]["count"]
         for name in DATABASE_TABLES
     }
-    columns = [row["name"] for row in repository.rows(f'PRAGMA table_info("{table}")')]
-    rows = repository.rows(f'SELECT * FROM "{table}" ORDER BY rowid DESC LIMIT 200')
-    tabs = "".join(
+    tabs = f'<a class="{"active" if table == "overview" else ""}" href="/?table=overview">模型总览<small>{counts["models"]}</small></a>' + "".join(
         f'<a class="{"active" if name == table else ""}" href="/?table={name}">'
         f'{label}<small>{counts[name]}</small></a>'
         for name, label in DATABASE_TABLES.items()
     )
+    if table == "overview":
+        models = repository.rows(
+            """SELECT m.id, m.model_name, p.vendor_or_organization,
+                      p.open_source_attribute, p.region
+               FROM models m LEFT JOIN model_profiles p ON p.model_id = m.id
+               ORDER BY m.id"""
+        )
+        benchmarks = repository.rows("SELECT id, display_name FROM benchmarks ORDER BY id")
+        scores = {
+            (row["model_id"], row["benchmark_id"]): row
+            for row in repository.rows(
+                "SELECT model_id, benchmark_id, score_value, score_unit FROM benchmark_results"
+            )
+        }
+        columns = ("模型名称", "评测项", "评测结果", "所属组织", "开源状态", "所属地域")
+        items = "".join(f"<div>{_cell(item['display_name'])}</div>" for item in benchmarks)
+        body_rows = []
+        for model in models:
+            results = []
+            for item in benchmarks:
+                score = scores.get((model["id"], item["id"]))
+                value = "—" if not score or score["score_value"] is None else f"{score['score_value']:g}"
+                if score and score["score_value"] is not None and score["score_unit"] == "percent":
+                    value += "%"
+                results.append(f"<div>{_cell(value)}</div>")
+            body_rows.append("<tr>" + "".join(
+                f"<td>{value}</td>" for value in (
+                    _cell(model["model_name"]), items, "".join(results),
+                    _cell(model["vendor_or_organization"]),
+                    _cell(model["open_source_attribute"]), _cell(model["region"]),
+                )
+            ) + "</tr>")
+        body = "".join(body_rows)
+    else:
+        columns = [row["name"] for row in repository.rows(f'PRAGMA table_info("{table}")')]
+        rows = repository.rows(f'SELECT * FROM "{table}" ORDER BY rowid DESC LIMIT 200')
+        body = "".join(
+            "<tr>" + "".join(f"<td>{_cell(row[column])}</td>" for column in columns) + "</tr>"
+            for row in rows
+        )
     header = "".join(f"<th>{escape(column)}</th>" for column in columns)
-    body = "".join(
-        "<tr>" + "".join(f"<td>{_cell(row[column])}</td>" for column in columns) + "</tr>"
-        for row in rows
-    ) or f'<tr><td class="empty" colspan="{max(1, len(columns))}">暂无数据</td></tr>'
+    body = body or f'<tr><td class="empty" colspan="{len(columns)}">暂无数据</td></tr>'
+    title = "模型总览" if table == "overview" else DATABASE_TABLES[table]
+    subtitle = "全部模型 · 只读" if table == "overview" else "最新 200 行 · 只读"
     return f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
 <title>模型数据库</title><style>
@@ -121,7 +158,7 @@ nav{{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}}nav a{{display:flex
 nav a.active{{background:#155eef;color:white;border-color:#155eef}}small{{opacity:.75}}section{{overflow:auto;border:1px solid #e4e7ec;border-radius:10px;background:white}}
 table{{width:100%;border-collapse:collapse;white-space:nowrap}}th,td{{padding:11px 14px;border-bottom:1px solid #eaecf0;text-align:left;vertical-align:top}}th{{position:sticky;top:0;background:#f9fafb;color:#475467;font-size:12px}}
 td{{max-width:420px;overflow:hidden;text-overflow:ellipsis}}tr:last-child td{{border-bottom:0}}tr:hover td{{background:#f9fafb}}details{{white-space:normal}}summary{{cursor:pointer}}pre{{max-width:800px;white-space:pre-wrap;word-break:break-word}}.empty{{padding:40px;text-align:center;color:#98a2b3}}
-</style></head><body><main><h1>模型数据库</h1><p>{DATABASE_TABLES[table]} · 最新 200 行 · 只读</p><nav>{tabs}</nav>
+</style></head><body><main><h1>模型数据库</h1><p>{title} · {subtitle}</p><nav aria-label="数据菜单">{tabs}</nav>
 <section><table><thead><tr>{header}</tr></thead><tbody>{body}</tbody></table></section></main></body></html>"""
 
 
@@ -185,7 +222,7 @@ def database_view(
     table: str = Query(default="models"),
     repository: TrackerRepository = Depends(get_repository),
 ) -> HTMLResponse:
-    if table not in DATABASE_TABLES:
+    if table != "overview" and table not in DATABASE_TABLES:
         raise HTTPException(status_code=404, detail="数据表不存在")
     return HTMLResponse(_database_page(repository, table))
 

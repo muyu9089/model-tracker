@@ -11,6 +11,49 @@ from app.main import app
 
 
 class DatabasePageTests(unittest.TestCase):
+    def test_overview_shows_all_models_and_benchmarks(self) -> None:
+        with TemporaryDirectory() as directory:
+            database = Path(directory) / "tracker.db"
+            repository = TrackerRepository(database)
+            repository.add_model({"name": "<Demo>"})
+            for number in range(1, 201):
+                repository.add_model({"name": f"Model-{number:03}"})
+            repository.upsert_profile({
+                "model_name": "<Demo>",
+                "vendor_or_organization": "<Example>",
+                "open_source_attribute": "开源",
+                "region": "中国",
+            })
+            repository.save_benchmark_metrics(
+                "intelligence_index", ["<Demo>"], {"<Demo>": {
+                    "matched": True, "intelligence_index": 42,
+                }}
+            )
+            repository.save_benchmark_metrics(
+                "terminalbench-4-0", ["<Demo>"], {"<Demo>": {
+                    "matched": True, "terminalbench_4_0_score": 50,
+                }}
+            )
+            app.dependency_overrides[get_settings] = lambda: Settings(
+                tracker_database_path=str(database)
+            )
+            try:
+                response = TestClient(app).get("/?table=overview")
+            finally:
+                app.dependency_overrides.clear()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.text.count("<tr>"), 202)
+        self.assertIn("Model-200", response.text)
+        self.assertIn("&lt;Demo&gt;", response.text)
+        self.assertIn("&lt;Example&gt;", response.text)
+        self.assertNotIn("<Demo>", response.text)
+        self.assertIn("<td><div>42</div><div>50%</div><div>—</div></td>", response.text)
+        for value in ("模型名称", "评测项", "评测结果", "所属组织", "开源状态", "所属地域",
+                      "Intelligence Index", "Terminal-Bench 4.0", "τ³-Banking", "42", "开源", "中国", "—"):
+            self.assertIn(value, response.text)
+        self.assertIn('href="/?table=models"', response.text)
+
     def test_manual_scan_requires_token_and_returns_new_models(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)
