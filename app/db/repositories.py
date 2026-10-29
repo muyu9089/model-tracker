@@ -103,6 +103,10 @@ class TrackerRepository:
                 "SELECT model_name FROM models ORDER BY id"
             )]
 
+    def delete_model(self, model_id: int) -> bool:
+        with transaction(self.path) as connection:
+            return connection.execute("DELETE FROM models WHERE id = ?", (model_id,)).rowcount > 0
+
     def has_profile(self, name: str) -> bool:
         with transaction(self.path) as connection:
             row = connection.execute(

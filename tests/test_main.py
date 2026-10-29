@@ -11,6 +11,44 @@ from app.main import app
 
 
 class DatabasePageTests(unittest.TestCase):
+    def test_delete_model_requires_token_and_removes_related_data(self) -> None:
+        with TemporaryDirectory() as directory:
+            database = Path(directory) / "tracker.db"
+            repository = TrackerRepository(database)
+            model_id, _ = repository.add_model({"name": "Delete Me"})
+            repository.add_model({"name": "Keep Me"})
+            repository.upsert_profile({"model_name": "Delete Me", "region": "中国"})
+            repository.save_benchmark_metrics(
+                "intelligence_index", ["Delete Me"], {"Delete Me": {
+                    "matched": True, "intelligence_index": 42,
+                }}
+            )
+            app.dependency_overrides[get_settings] = lambda: Settings(
+                tracker_database_path=str(database), tracker_scan_token="secret"
+            )
+            try:
+                client = TestClient(app)
+                self.assertEqual(client.delete(f"/models/{model_id}").status_code, 401)
+                page = client.get("/?table=overview").text
+                self.assertIn("Delete Me", page)
+                self.assertIn(f'data-id="{model_id}"', page)
+                self.assertEqual(client.delete(
+                    f"/models/{model_id}", headers={"X-Scan-Token": "secret"}
+                ).status_code, 200)
+                self.assertEqual(client.delete(
+                    f"/models/{model_id}", headers={"X-Scan-Token": "secret"}
+                ).status_code, 404)
+                page = client.get("/?table=overview").text
+                self.assertNotIn("Delete Me", page)
+                self.assertIn("Keep Me", page)
+                self.assertEqual(repository.model_names(), ["Keep Me"])
+                for table in ("model_profiles", "benchmark_states", "benchmark_results"):
+                    self.assertEqual(repository.rows(
+                        f"SELECT COUNT(*) AS n FROM {table} WHERE model_id = ?", (model_id,)
+                    )[0]["n"], 0)
+            finally:
+                app.dependency_overrides.clear()
+
     def test_overview_shows_all_models_and_benchmarks(self) -> None:
         with TemporaryDirectory() as directory:
             database = Path(directory) / "tracker.db"

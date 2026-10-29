@@ -119,7 +119,7 @@ def _database_page(repository: TrackerRepository, table: str) -> str:
                 "SELECT model_id, benchmark_id, score_value, score_unit FROM benchmark_results"
             )
         }
-        columns = ("模型名称", "评测项", "评测结果", "所属组织", "开源状态", "所属地域")
+        columns = ("模型名称", "评测项", "评测结果", "所属组织", "开源状态", "所属地域", "操作")
         items = "".join(f"<div>{_cell(item['display_name'])}</div>" for item in benchmarks)
         body_rows = []
         for model in models:
@@ -135,6 +135,7 @@ def _database_page(repository: TrackerRepository, table: str) -> str:
                     _cell(model["model_name"]), items, "".join(results),
                     _cell(model["vendor_or_organization"]),
                     _cell(model["open_source_attribute"]), _cell(model["region"]),
+                    f'<button type="button" data-id="{model["id"]}" data-name="{escape(model["model_name"], quote=True)}" onclick="deleteModel(this)">删除</button>',
                 )
             ) + "</tr>")
         body = "".join(body_rows)
@@ -148,7 +149,7 @@ def _database_page(repository: TrackerRepository, table: str) -> str:
     header = "".join(f"<th>{escape(column)}</th>" for column in columns)
     body = body or f'<tr><td class="empty" colspan="{len(columns)}">暂无数据</td></tr>'
     title = "模型总览" if table == "overview" else DATABASE_TABLES[table]
-    subtitle = "全部模型 · 只读" if table == "overview" else "最新 200 行 · 只读"
+    subtitle = "全部模型 · 可删除" if table == "overview" else "最新 200 行 · 只读"
     return f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
 <title>模型数据库</title><style>
@@ -159,7 +160,20 @@ nav a.active{{background:#155eef;color:white;border-color:#155eef}}small{{opacit
 table{{width:100%;border-collapse:collapse;white-space:nowrap}}th,td{{padding:11px 14px;border-bottom:1px solid #eaecf0;text-align:left;vertical-align:top}}th{{position:sticky;top:0;background:#f9fafb;color:#475467;font-size:12px}}
 td{{max-width:420px;overflow:hidden;text-overflow:ellipsis}}tr:last-child td{{border-bottom:0}}tr:hover td{{background:#f9fafb}}details{{white-space:normal}}summary{{cursor:pointer}}pre{{max-width:800px;white-space:pre-wrap;word-break:break-word}}.empty{{padding:40px;text-align:center;color:#98a2b3}}
 </style></head><body><main><h1>模型数据库</h1><p>{title} · {subtitle}</p><nav aria-label="数据菜单">{tabs}</nav>
-<section><table><thead><tr>{header}</tr></thead><tbody>{body}</tbody></table></section></main></body></html>"""
+{'<p><label>删除令牌 <input id="delete-token" type="password" autocomplete="off"></label></p>' if table == 'overview' else ''}
+<section><table><thead><tr>{header}</tr></thead><tbody>{body}</tbody></table></section></main>
+<script>
+async function deleteModel(button) {{
+  const token = document.getElementById('delete-token').value;
+  if (!token) {{ alert('请输入删除令牌'); return; }}
+  if (!confirm(`确定删除模型“${{button.dataset.name}}”及其全部关联记录吗？`)) return;
+  try {{
+    const response = await fetch(`/models/${{button.dataset.id}}`, {{method: 'DELETE', headers: {{'X-Scan-Token': token}}}});
+    if (!response.ok) {{ alert((await response.json()).detail || '删除失败'); return; }}
+    location.reload();
+  }} catch {{ alert('删除失败，请检查网络连接'); }}
+}}
+</script></body></html>"""
 
 
 def _models_updated_on(repository: TrackerRepository, updated_date: date) -> list[dict[str, Any]]:
@@ -234,6 +248,22 @@ def models_by_updated_date(
 ) -> dict[str, Any]:
     models = _models_updated_on(repository, updated_date)
     return {"date": updated_date.isoformat(), "count": len(models), "models": models}
+
+
+@app.delete("/models/{model_id}")
+def delete_model(
+    model_id: int,
+    x_scan_token: str = Header(default=""),
+    settings: Settings = Depends(get_settings),
+    repository: TrackerRepository = Depends(get_repository),
+) -> dict[str, bool]:
+    if not settings.tracker_scan_token:
+        raise HTTPException(status_code=503, detail="未配置 TRACKER_SCAN_TOKEN")
+    if not compare_digest(x_scan_token.encode(), settings.tracker_scan_token.encode()):
+        raise HTTPException(status_code=401, detail="无效的扫描令牌")
+    if not repository.delete_model(model_id):
+        raise HTTPException(status_code=404, detail="模型不存在")
+    return {"deleted": True}
 
 
 @app.post("/models/scan")
