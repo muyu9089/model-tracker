@@ -1,4 +1,5 @@
 import hashlib
+import math
 import re
 import unicodedata
 from datetime import datetime, timezone
@@ -108,6 +109,59 @@ class TrackerRepository:
     def delete_model(self, model_id: int) -> bool:
         with transaction(self.path) as connection:
             return connection.execute("DELETE FROM models WHERE id = ?", (model_id,)).rowcount > 0
+
+    def update_overview(
+        self, model_id: int, name: str, organization: str | None,
+        open_source: str | None, region: str | None, scores: dict[str, float | None],
+    ) -> bool:
+        name = name.strip()
+        normalized = normalize_name(name)
+        if not name or len(name) > 200 or not normalized:
+            raise ValueError("模型名称不能为空且不能超过 200 字符")
+        if any(value is not None and (not isinstance(value, (int, float)) or not math.isfinite(value)) for value in scores.values()):
+            raise ValueError("评测分数必须是有限数字")
+        with transaction(self.path) as connection:
+            benchmarks = {row["code"]: row for row in connection.execute(
+                "SELECT id, code FROM benchmarks"
+            )}
+            if scores.keys() - benchmarks.keys():
+                raise ValueError("评测项不存在")
+            if connection.execute("SELECT 1 FROM models WHERE id=?", (model_id,)).fetchone() is None:
+                return False
+            if connection.execute(
+                "SELECT 1 FROM models WHERE normalized_name=? AND id!=?", (normalized, model_id)
+            ).fetchone():
+                raise ValueError("模型名称已存在")
+            now = utc_now()
+            connection.execute(
+                "UPDATE models SET model_name=?, normalized_name=?, updated_at=? WHERE id=?",
+                (name, normalized, now, model_id),
+            )
+            connection.execute(
+                """INSERT INTO model_profiles(model_id, vendor_or_organization,
+                   open_source_attribute, region, collected_at) VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(model_id) DO UPDATE SET
+                   vendor_or_organization=excluded.vendor_or_organization,
+                   open_source_attribute=excluded.open_source_attribute,
+                   region=excluded.region, collected_at=excluded.collected_at""",
+                (model_id, organization, open_source, region, now),
+            )
+            for code, score in scores.items():
+                benchmark_id = benchmarks[code]["id"]
+                unit = "index" if code == "intelligence_index" else "elo" if code == "aa-briefcase" else "percent"
+                connection.execute(
+                    """INSERT INTO benchmark_results(model_id, benchmark_id, score_value, score_unit, collected_at)
+                       VALUES (?, ?, ?, ?, ?) ON CONFLICT(model_id, benchmark_id) DO UPDATE SET
+                       score_value=excluded.score_value, score_unit=excluded.score_unit,
+                       collected_at=excluded.collected_at""",
+                    (model_id, benchmark_id, score, unit, now),
+                )
+                connection.execute(
+                    """UPDATE benchmark_states SET status=?, update_error=NULL, updated_at=?
+                       WHERE model_id=? AND benchmark_id=?""",
+                    ("recorded" if score is not None else "pending", now, model_id, benchmark_id),
+                )
+        return True
 
     def has_profile(self, name: str) -> bool:
         with transaction(self.path) as connection:

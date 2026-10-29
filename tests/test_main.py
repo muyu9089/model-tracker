@@ -8,11 +8,46 @@ from fastapi.testclient import TestClient
 
 from app.config import Settings, get_settings
 from app.db import TrackerRepository
-from app.main import _database_page, app, supplement_models
+from app.main import OverviewEdit, _database_page, app, edit_model, supplement_models
 from app.qwen_agent import ModelInfo
 
 
 class DatabasePageTests(unittest.TestCase):
+    def test_overview_edit_updates_atomically_and_preserves_other_fields(self) -> None:
+        with TemporaryDirectory() as directory:
+            repository = TrackerRepository(Path(directory) / "tracker.db")
+            model_id, _ = repository.add_model({"name": "Demo"})
+            repository.add_model({"name": "Taken"})
+            repository.upsert_profile({"model_name": "Demo", "model_series": "Series", "region": "中国"})
+            repository.save_benchmark_metrics("intelligence_index", ["Demo"], {"Demo": {
+                "matched": True, "intelligence_index": 42, "source_url": "https://example.test"
+            }})
+            payload = OverviewEdit(model_name="Renamed", vendor_or_organization="Org",
+                                   open_source_attribute="开源", region=None,
+                                   scores={"intelligence_index": None, "terminalbench-4-0": 55})
+            settings = Settings(tracker_scan_token="secret")
+            with self.assertRaises(Exception) as unauthorized:
+                edit_model(model_id, payload, "", settings, repository)
+            self.assertEqual(unauthorized.exception.status_code, 401)
+            self.assertEqual(edit_model(model_id, payload, "secret", settings, repository), {"updated": True})
+            self.assertEqual(repository.rows("SELECT model_name FROM models WHERE id=?", (model_id,))[0]["model_name"], "Renamed")
+            profile = repository.rows("SELECT model_series, vendor_or_organization, region FROM model_profiles WHERE model_id=?", (model_id,))[0]
+            self.assertEqual(profile, {"model_series": "Series", "vendor_or_organization": "Org", "region": None})
+            result = repository.rows("""SELECT r.score_value, r.source_url, s.status FROM benchmark_results r
+                JOIN benchmark_states s ON s.model_id=r.model_id AND s.benchmark_id=r.benchmark_id
+                JOIN benchmarks b ON b.id=r.benchmark_id WHERE r.model_id=? AND b.code='intelligence_index'""", (model_id,))[0]
+            self.assertEqual(result, {"score_value": None, "source_url": "https://example.test", "status": "pending"})
+            self.assertEqual(repository.rows("""SELECT r.score_value FROM benchmark_results r JOIN benchmarks b
+                ON b.id=r.benchmark_id WHERE r.model_id=? AND b.code='terminalbench-4-0'""", (model_id,))[0]["score_value"], 55)
+            with self.assertRaises(Exception) as conflict:
+                edit_model(model_id, payload.model_copy(update={"model_name": "Taken"}), "secret", settings, repository)
+            self.assertEqual(conflict.exception.status_code, 422)
+            self.assertEqual(repository.rows("SELECT model_name FROM models WHERE id=?", (model_id,))[0]["model_name"], "Renamed")
+            with self.assertRaises(Exception) as invalid:
+                edit_model(model_id, payload.model_copy(update={"scores": {"unknown": 5}}), "secret", settings, repository)
+            self.assertEqual(invalid.exception.status_code, 422)
+            self.assertIn('onclick="editModel(this)"', _database_page(repository, "overview"))
+
     def test_supplement_fills_missing_fields_and_shows_log(self) -> None:
         with TemporaryDirectory() as directory:
             database = Path(directory) / "tracker.db"
@@ -176,7 +211,8 @@ class DatabasePageTests(unittest.TestCase):
         self.assertIn("&lt;Demo&gt;", response.text)
         self.assertIn("&lt;Example&gt;", response.text)
         self.assertNotIn("<Demo>", response.text)
-        self.assertIn("<td><div>42</div><div>50%</div><div>—</div><div>—</div></td>", response.text)
+        self.assertIn('<span class="read-value">42</span>', response.text)
+        self.assertIn('<span class="read-value">50%</span>', response.text)
         for value in ("模型名称", "评测项", "评测结果", "所属组织", "开源状态", "所属地域",
                       "Intelligence Index", "Terminal-Bench 4.0", "AA-Briefcase v1.1", "AutomationBench-AA", "42", "开源", "中国", "—"):
             self.assertIn(value, response.text)

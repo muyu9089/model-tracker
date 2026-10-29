@@ -54,6 +54,15 @@ class SearchRequest(BaseModel):
     limit: int = Field(default=10, ge=1, le=30)
 
 
+class OverviewEdit(BaseModel):
+    model_config = {"extra": "forbid"}
+    model_name: str
+    vendor_or_organization: str | None
+    open_source_attribute: str | None
+    region: str | None
+    scores: dict[str, float | None]
+
+
 def get_client(settings: Settings = Depends(get_settings)) -> AIHotMCPClient:
     return AIHotMCPClient(settings)
 
@@ -108,13 +117,18 @@ def _database_page(repository: TrackerRepository, table: str) -> str:
         for name, label in DATABASE_TABLES.items() if name != "scan_run_models"
     )
     if table == "overview":
+        def editable(value: Any, field: str) -> str:
+            original = "" if value is None else str(value)
+            return (f'<span class="read-value">{_cell(value)}</span>'
+                    f'<input class="edit-value" data-field="{field}" value="{escape(original, quote=True)}" hidden>')
+
         models = repository.rows(
             """SELECT m.id, m.model_name, p.vendor_or_organization,
                       p.open_source_attribute, p.region
                FROM models m LEFT JOIN model_profiles p ON p.model_id = m.id
                ORDER BY m.id"""
         )
-        benchmarks = repository.rows("SELECT id, display_name FROM benchmarks ORDER BY id")
+        benchmarks = repository.rows("SELECT id, code, display_name FROM benchmarks ORDER BY id")
         scores = {
             (row["model_id"], row["benchmark_id"]): row
             for row in repository.rows(
@@ -131,12 +145,15 @@ def _database_page(repository: TrackerRepository, table: str) -> str:
                 value = "—" if not score or score["score_value"] is None else f"{score['score_value']:g}"
                 if score and score["score_value"] is not None and score["score_unit"] == "percent":
                     value += "%"
-                results.append(f"<div>{_cell(value)}</div>")
+                raw_score = "" if not score or score["score_value"] is None else f'{score["score_value"]:g}'
+                results.append(f'<div><span class="read-value">{_cell(value)}</span>'
+                               f'<input class="edit-value" type="number" step="any" data-score="{escape(item["code"], quote=True)}" value="{raw_score}" hidden></div>')
             body_rows.append("<tr>" + "".join(
                 f"<td>{value}</td>" for value in (
-                    _cell(model["model_name"]), items, "".join(results),
-                    _cell(model["vendor_or_organization"]),
-                    _cell(model["open_source_attribute"]), _cell(model["region"]),
+                    editable(model["model_name"], "model_name"), items, "".join(results),
+                    editable(model["vendor_or_organization"], "vendor_or_organization"),
+                    editable(model["open_source_attribute"], "open_source_attribute"), editable(model["region"], "region"),
+                    f'<button type="button" data-id="{model["id"]}" onclick="editModel(this)">编辑</button> '
                     f'<button type="button" data-id="{model["id"]}" data-name="{escape(model["model_name"], quote=True)}" onclick="deleteModel(this)">删除</button>',
                 )
             ) + "</tr>")
@@ -179,10 +196,34 @@ nav{{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}}nav a{{display:flex
 nav a.active{{background:#155eef;color:white;border-color:#155eef}}small{{opacity:.75}}section{{overflow:auto;border:1px solid #e4e7ec;border-radius:10px;background:white}}
 table{{width:100%;border-collapse:collapse;white-space:nowrap}}th,td{{padding:11px 14px;border-bottom:1px solid #eaecf0;text-align:left;vertical-align:top}}th{{position:sticky;top:0;background:#f9fafb;color:#475467;font-size:12px}}
 td{{max-width:420px;overflow:hidden;text-overflow:ellipsis}}tr:last-child td{{border-bottom:0}}tr:hover td{{background:#f9fafb}}details{{white-space:normal}}summary{{cursor:pointer}}pre{{max-width:800px;white-space:pre-wrap;word-break:break-word}}.empty{{padding:40px;text-align:center;color:#98a2b3}}
+.edit-value{{width:150px;max-width:100%;padding:5px}}.edit-value[type=number]{{width:90px}}[hidden]{{display:none!important}}
 </style></head><body><main><h1>模型数据库</h1><p>{title} · {subtitle}</p><nav aria-label="数据菜单">{tabs}</nav>
 {'<p><label>操作令牌 <input id="delete-token" type="password" autocomplete="off"></label> <button type="button" onclick="supplementInfo()">补充缺失信息</button></p>' if table == 'overview' else ''}
 <section><table><thead><tr>{header}</tr></thead><tbody>{body}</tbody></table></section></main>
 <script>
+async function editModel(button) {{
+  const row = button.closest('tr');
+  if (button.textContent === '编辑') {{
+    row.querySelectorAll('.read-value,.edit-value').forEach(el => el.hidden = !el.hidden);
+    button.textContent = '保存';
+    const cancel = document.createElement('button');
+    cancel.type = 'button'; cancel.textContent = '取消'; cancel.onclick = () => location.reload();
+    button.after(cancel);
+    return;
+  }}
+  const token = document.getElementById('delete-token').value;
+  if (!token) {{ alert('请输入操作令牌'); return; }}
+  if ([...row.querySelectorAll('[data-score]')].some(input => !input.validity.valid)) {{ alert('请输入有效的评测分数'); return; }}
+  const data = {{scores: {{}}}};
+  row.querySelectorAll('[data-field]').forEach(input => data[input.dataset.field] = input.value.trim() || null);
+  row.querySelectorAll('[data-score]').forEach(input => data.scores[input.dataset.score] = input.value.trim() === '' ? null : Number(input.value));
+  if (!data.model_name) {{ alert('模型名称不能为空'); return; }}
+  try {{
+    const response = await fetch(`/models/${{button.dataset.id}}`, {{method: 'PUT', headers: {{'X-Scan-Token': token, 'Content-Type': 'application/json'}}, body: JSON.stringify(data)}});
+    if (!response.ok) {{ const error = await response.json(); alert(typeof error.detail === 'string' ? error.detail : '保存失败，请检查输入'); return; }}
+    location.reload();
+  }} catch {{ alert('保存失败，请检查网络连接'); }}
+}}
 async function supplementInfo() {{
   const token = document.getElementById('delete-token').value;
   if (!token) {{ alert('请输入操作令牌'); return; }}
@@ -278,6 +319,30 @@ def models_by_updated_date(
 ) -> dict[str, Any]:
     models = _models_updated_on(repository, updated_date)
     return {"date": updated_date.isoformat(), "count": len(models), "models": models}
+
+
+@app.put("/models/{model_id}")
+def edit_model(
+    model_id: int,
+    changes: OverviewEdit,
+    x_scan_token: str = Header(default=""),
+    settings: Settings = Depends(get_settings),
+    repository: TrackerRepository = Depends(get_repository),
+) -> dict[str, bool]:
+    if not settings.tracker_scan_token:
+        raise HTTPException(status_code=503, detail="未配置 TRACKER_SCAN_TOKEN")
+    if not compare_digest(x_scan_token.encode(), settings.tracker_scan_token.encode()):
+        raise HTTPException(status_code=401, detail="无效的扫描令牌")
+    try:
+        updated = repository.update_overview(
+            model_id, changes.model_name, changes.vendor_or_organization,
+            changes.open_source_attribute, changes.region, changes.scores,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not updated:
+        raise HTTPException(status_code=404, detail="模型不存在")
+    return {"updated": True}
 
 
 @app.delete("/models/{model_id}")
