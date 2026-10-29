@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -7,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from app.config import Settings, get_settings
 from app.db import TrackerRepository
-from app.main import app
+from app.main import _database_page, app, supplement_models
 from app.qwen_agent import ModelInfo
 
 
@@ -18,27 +19,82 @@ class DatabasePageTests(unittest.TestCase):
             repository = TrackerRepository(database)
             repository.add_model({"name": "Demo"})
             repository.upsert_profile({"model_name": "Demo", "vendor_or_organization": "Existing"})
-            app.dependency_overrides[get_settings] = lambda: Settings(
+            settings = Settings(
                 tracker_database_path=str(database), tracker_scan_token="secret"
             )
             researched = {field: None for field in ModelInfo.model_fields}
             researched.update({"model_name": "Demo", "vendor_or_organization": "Replacement",
                                "open_source_attribute": "开源", "region": "中国"})
-            try:
-                with patch("app.qwen_agent.QwenAgent.research_model_info", new_callable=AsyncMock) as research:
-                    research.return_value = researched
-                    client = TestClient(app)
-                    self.assertEqual(client.post("/models/supplement").status_code, 401)
-                    response = client.post("/models/supplement", headers={"X-Scan-Token": "secret"})
-                self.assertEqual(response.json(), {"succeeded": 1, "failed": 0})
-                self.assertEqual(repository.rows(
-                    "SELECT vendor_or_organization, open_source_attribute, region FROM model_profiles"
-                )[0], {"vendor_or_organization": "Existing", "open_source_attribute": "开源", "region": "中国"})
-                page = client.get("/?table=supplement").text
-                self.assertIn("Demo：补充完成", page)
-                self.assertNotIn('href="/?table=scan_run_models"', page)
-            finally:
-                app.dependency_overrides.clear()
+            with patch("app.qwen_agent.QwenAgent.research_model_info", new_callable=AsyncMock) as research, \
+                     patch("app.artificial_analysis.ArtificialAnalysisClient") as aa:
+                research.return_value = researched
+                client_aa = aa.return_value
+                for fetch in ("fetch_models_html", "fetch_terminalbench_html", "fetch_tau_banking_html"):
+                    setattr(client_aa, fetch, AsyncMock(return_value="html"))
+                for enrich, score in (("enrich_models", "intelligence_index"),
+                                      ("enrich_terminalbench_models", "terminalbench_4_0_score"),
+                                      ("enrich_tau_banking_models", "tau3_banking_score")):
+                    setattr(client_aa, enrich, AsyncMock(return_value={"Demo": {
+                        "matched": True, score: 42, "model_name": "Demo",
+                        "slug": "demo", "match_method": "exact", "source_url": "https://example.test",
+                    }}))
+                with self.assertRaises(Exception) as unauthorized:
+                    asyncio.run(supplement_models("", settings, repository))
+                self.assertEqual(unauthorized.exception.status_code, 401)
+                response = asyncio.run(supplement_models("secret", settings, repository))
+            self.assertEqual(response, {"succeeded": 1, "failed": 0})
+            self.assertEqual([row["score_value"] for row in repository.rows(
+                "SELECT score_value FROM benchmark_results ORDER BY benchmark_id"
+            )], [42, 42, 42])
+            self.assertEqual(repository.rows(
+                "SELECT vendor_or_organization, open_source_attribute, region FROM model_profiles"
+            )[0], {"vendor_or_organization": "Existing", "open_source_attribute": "开源", "region": "中国"})
+            page = _database_page(repository, "supplement")
+            self.assertIn("Demo：补充完成", page)
+            self.assertIn("补充记录", page)
+            self.assertIn("失败报错", page)
+            self.assertEqual(page.count("<tr>"), 2)
+            self.assertNotIn('href="/?table=scan_run_models"', page)
+
+    def test_supplement_retries_null_scores_and_shows_errors_in_one_row(self) -> None:
+        with TemporaryDirectory() as directory:
+            database = Path(directory) / "tracker.db"
+            repository = TrackerRepository(database)
+            repository.add_model({"name": "Demo"})
+            repository.upsert_profile({"model_name": "Demo", "vendor_or_organization": "Org",
+                                       "open_source_attribute": "开源", "region": "中国"})
+            metadata = {"matched": True, "model_name": "Demo", "slug": "demo",
+                        "match_method": "exact", "source_url": "https://example.test"}
+            repository.save_benchmark_metrics("intelligence_index", ["Demo"],
+                                              {"Demo": metadata | {"intelligence_index": None}})
+            self.assertEqual(repository.pending_names("intelligence_index"), ["Demo"])
+            settings = Settings(
+                tracker_database_path=str(database), tracker_scan_token="secret"
+            )
+            with patch("app.artificial_analysis.ArtificialAnalysisClient") as aa, \
+                     patch("app.qwen_agent.QwenAgent.research_model_info", new_callable=AsyncMock) as research:
+                client_aa = aa.return_value
+                client_aa.fetch_models_html = AsyncMock(return_value="html")
+                client_aa.fetch_terminalbench_html = AsyncMock(return_value="html")
+                client_aa.fetch_tau_banking_html = AsyncMock(return_value="html")
+                client_aa.enrich_models = AsyncMock(return_value={"Demo": metadata | {"intelligence_index": 55}})
+                client_aa.enrich_terminalbench_models = AsyncMock(return_value={"Demo": {
+                    "matched": False, "error": "未匹配到模型"
+                }})
+                client_aa.enrich_tau_banking_models = AsyncMock(return_value={"Demo": metadata | {
+                    "tau3_banking_score": 20
+                }})
+                response = asyncio.run(supplement_models("secret", settings, repository))
+                research.assert_not_awaited()
+            self.assertEqual(response, {"succeeded": 0, "failed": 1})
+            self.assertEqual(repository.rows("""SELECT score_value FROM benchmark_results r
+                JOIN benchmarks b ON b.id=r.benchmark_id WHERE b.code='intelligence_index'""")[0]["score_value"], 55)
+            page = _database_page(repository, "supplement")
+            self.assertIn("terminalbench-4-0 / Demo：未匹配到模型", page)
+            self.assertEqual(page.count("<tr>"), 2)
+            details = _database_page(repository, "model_profiles")
+            self.assertIn("<th>模型名称</th>", details)
+            self.assertIn("<td>Demo</td>", details)
 
     def test_delete_model_requires_token_and_removes_related_data(self) -> None:
         with TemporaryDirectory() as directory:

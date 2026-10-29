@@ -1,6 +1,7 @@
 from datetime import date
 from datetime import datetime, timezone
 from html import escape
+import json
 from pathlib import Path
 from secrets import compare_digest
 from typing import Any, Literal
@@ -101,7 +102,7 @@ def _database_page(repository: TrackerRepository, table: str) -> str:
         name: repository.rows(f'SELECT COUNT(*) AS count FROM "{name}"')[0]["count"]
         for name in DATABASE_TABLES
     }
-    tabs = f'<a class="{"active" if table == "overview" else ""}" href="/?table=overview">模型总览<small>{counts["models"]}</small></a><a class="{"active" if table == "supplement" else ""}" href="/?table=supplement">补充信息</a>' + "".join(
+    tabs = f'<a class="{"active" if table == "overview" else ""}" href="/?table=overview">模型总览<small>{counts["models"]}</small></a><a class="{"active" if table == "supplement" else ""}" href="/?table=supplement">补充记录</a>' + "".join(
         f'<a class="{"active" if name == table else ""}" href="/?table={name}">'
         f'{label}<small>{counts[name]}</small></a>'
         for name, label in DATABASE_TABLES.items() if name != "scan_run_models"
@@ -141,21 +142,34 @@ def _database_page(repository: TrackerRepository, table: str) -> str:
             ) + "</tr>")
         body = "".join(body_rows)
     elif table == "supplement":
-        columns = ("时间", "日志")
+        columns = ("时间", "日志", "失败报错")
         log_path = repository.path.parent / "补充信息.log"
         lines = log_path.read_text(encoding="utf-8").splitlines()[-200:] if log_path.exists() else []
-        body = "".join(f"<tr><td>{_cell(line.partition(' | ')[0])}</td><td>{_cell(line.partition(' | ')[2])}</td></tr>" for line in reversed(lines))
+        records = []
+        for line in reversed(lines):
+            try:
+                record = json.loads(line)
+                records.append((record["time"], record["log"], record.get("errors", "")))
+            except (ValueError, KeyError, TypeError):
+                time, _, message = line.partition(" | ")
+                records.append((time, message, ""))
+        body = "".join("<tr>" + "".join(f"<td>{_cell(value)}</td>" for value in record) + "</tr>" for record in records)
     else:
         columns = [row["name"] for row in repository.rows(f'PRAGMA table_info("{table}")')]
-        rows = repository.rows(f'SELECT * FROM "{table}" ORDER BY rowid DESC LIMIT 200')
+        if table == "model_profiles":
+            columns.insert(0, "model_name")
+            rows = repository.rows("""SELECT m.model_name, p.* FROM model_profiles p
+                                      JOIN models m ON m.id=p.model_id ORDER BY p.rowid DESC LIMIT 200""")
+        else:
+            rows = repository.rows(f'SELECT * FROM "{table}" ORDER BY rowid DESC LIMIT 200')
         body = "".join(
             "<tr>" + "".join(f"<td>{_cell(row[column])}</td>" for column in columns) + "</tr>"
             for row in rows
         )
-    header = "".join(f"<th>{escape(column)}</th>" for column in columns)
+    header = "".join(f"<th>{escape('模型名称' if table == 'model_profiles' and column == 'model_name' else column)}</th>" for column in columns)
     body = body or f'<tr><td class="empty" colspan="{len(columns)}">暂无数据</td></tr>'
-    title = "模型总览" if table == "overview" else "补充信息" if table == "supplement" else DATABASE_TABLES[table]
-    subtitle = "全部模型 · 可删除" if table == "overview" else "最新 200 行 · 只读"
+    title = "模型总览" if table == "overview" else "补充记录" if table == "supplement" else DATABASE_TABLES[table]
+    subtitle = "全部模型 · 可删除" if table == "overview" else "最新 200 次 · 只读" if table == "supplement" else "最新 200 行 · 只读"
     return f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
 <title>模型数据库</title><style>
@@ -172,7 +186,7 @@ td{{max-width:420px;overflow:hidden;text-overflow:ellipsis}}tr:last-child td{{bo
 async function supplementInfo() {{
   const token = document.getElementById('delete-token').value;
   if (!token) {{ alert('请输入操作令牌'); return; }}
-  if (!confirm('开始补充缺失的模型信息？')) return;
+  if (!confirm('开始补充缺失的模型信息和评测指标？')) return;
   try {{
     const response = await fetch('/models/supplement', {{method: 'POST', headers: {{'X-Scan-Token': token}}}});
     if (!response.ok) {{ alert((await response.json()).detail || '补充失败'); return; }}
@@ -292,6 +306,7 @@ async def supplement_models(
         raise HTTPException(status_code=503, detail="未配置 TRACKER_SCAN_TOKEN")
     if not compare_digest(x_scan_token.encode(), settings.tracker_scan_token.encode()):
         raise HTTPException(status_code=401, detail="无效的扫描令牌")
+    from .artificial_analysis import ArtificialAnalysisClient
     from .model_tracker import SCAN_LOCK
     from .qwen_agent import ModelInfo, QwenAgent
 
@@ -306,26 +321,60 @@ async def supplement_models(
                   OR NULLIF(TRIM(p.open_source_attribute), '') IS NULL
                   OR NULLIF(TRIM(p.region), '') IS NULL ORDER BY m.id"""
         )
-        agent = QwenAgent(settings)
+        agent = QwenAgent(settings) if missing else None
         succeeded = 0
         failed = 0
-        with (repository.path.parent / "补充信息.log").open("a", encoding="utf-8") as log:
-            if not missing:
-                log.write(f"{datetime.now(timezone.utc).isoformat()} | 无缺失信息\n")
-            for row in missing:
-                name = row["model_name"]
+        messages = []
+        errors = []
+        for row in missing:
+            name = row["model_name"]
+            try:
+                profile = ModelInfo.model_validate(await agent.research_model_info(name)).model_dump()
+                profile["model_name"] = name
+                profile.update({field: row[field] for field in PROFILE_FIELDS if row[field]})
+                repository.upsert_profile(profile)
+                succeeded += 1
+                messages.append(f"{name}：补充完成")
+            except Exception as exc:
+                failed += 1
+                errors.append(f"{name}：{type(exc).__name__}：{exc}")
+
+        benchmark_fields = {
+            "intelligence_index": ("fetch_models_html", "enrich_models", "intelligence_index"),
+            "terminalbench-4-0": ("fetch_terminalbench_html", "enrich_terminalbench_models", "terminalbench_4_0_score"),
+            "tau3-banking": ("fetch_tau_banking_html", "enrich_tau_banking_models", "tau3_banking_score"),
+        }
+        if settings.artificial_analysis_enabled:
+            aa_client = ArtificialAnalysisClient(
+                base_url=settings.artificial_analysis_base_url,
+                timeout_seconds=settings.artificial_analysis_timeout_seconds,
+            )
+            for code, (fetch, enrich, score_field) in benchmark_fields.items():
+                names = repository.pending_names(code)
+                if not names:
+                    continue
                 try:
-                    profile = ModelInfo.model_validate(await agent.research_model_info(name)).model_dump()
-                    profile["model_name"] = name
-                    profile.update({field: row[field] for field in PROFILE_FIELDS if row[field]})
-                    repository.upsert_profile(profile)
-                    succeeded += 1
-                    message = f"{name}：补充完成"
+                    html = await getattr(aa_client, fetch)()
+                    metrics = await getattr(aa_client, enrich)(names, html)
+                    repository.save_benchmark_metrics(code, names, metrics)
+                    completed = [name for name in names if metrics.get(name, {}).get(score_field) is not None]
+                    messages.append(f"{code}：补充 {len(completed)}/{len(names)} 项")
+                    for name in names:
+                        if name not in completed:
+                            failed += 1
+                            errors.append(f"{code} / {name}：{metrics.get(name, {}).get('error') or '评测分数缺失'}")
                 except Exception as exc:
-                    failed += 1
-                    message = f"{name}：补充失败（{type(exc).__name__}）"
-                log.write(f"{datetime.now(timezone.utc).isoformat()} | {' '.join(message.splitlines())}\n")
-                log.flush()
+                    failed += len(names)
+                    errors.append(f"{code}：{type(exc).__name__}：{exc}")
+        elif any(repository.pending_names(code) for code in benchmark_fields):
+            errors.append("评测指标：Artificial Analysis 已禁用")
+        record = {
+            "time": datetime.now(timezone.utc).isoformat(),
+            "log": "；".join(messages) or "无缺失信息",
+            "errors": "；".join(" ".join(error.splitlines()) for error in errors),
+        }
+        with (repository.path.parent / "补充信息.log").open("a", encoding="utf-8") as log:
+            log.write(json.dumps(record, ensure_ascii=False) + "\n")
     return {"succeeded": succeeded, "failed": failed}
 
 
