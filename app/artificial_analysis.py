@@ -157,16 +157,11 @@ def parse_catalog(html: str) -> list[dict[str, Any]]:
 
 
 def parse_metric_record(html: str, slug: str) -> dict[str, Any] | None:
-    """Return the rich model record that contains the three requested metrics."""
+    """Return a model record with an Intelligence Index score."""
     for model in _decode_objects(_next_flight_text(html), '{"id":"'):
         if model.get("slug") != slug:
             continue
-        tokens = model.get("intelligenceIndexOutputTokensPerTask")
-        if (
-            model.get("intelligenceIndex") is not None
-            and model.get("intelligenceIndexTimePerTask") is not None
-            and isinstance(tokens, dict)
-        ):
+        if isinstance(model.get("intelligenceIndex"), (int, float)):
             return model
     return None
 
@@ -177,7 +172,7 @@ def parse_aa_briefcase_catalog(html: str) -> list[dict[str, Any]]:
         model for model in _decode_objects(_next_flight_text(html), '{"id":"')
         if isinstance(model.get("slug"), str)
         and isinstance(model.get("name"), str)
-        and isinstance(model.get("aaBriefcase"), (int, float))
+        and isinstance(model.get("briefcaseElo"), (int, float))
     ]
 
 
@@ -186,7 +181,7 @@ def parse_automationbench_catalog(html: str) -> list[dict[str, Any]]:
         model for model in _decode_objects(_next_flight_text(html), '{"id":"')
         if isinstance(model.get("slug"), str)
         and isinstance(model.get("name"), str)
-        and isinstance(model.get("automationBenchAA"), (int, float))
+        and isinstance(model.get("automationBenchPartialScore"), (int, float))
     ]
 
 
@@ -395,10 +390,10 @@ class ArtificialAnalysisClient:
         return results
 
     async def enrich_aa_briefcase_models(self, names: list[str], html: str) -> dict[str, dict[str, Any]]:
-        return await self._enrich_score_models(names, html, "aa-briefcase", "aaBriefcase", "aa_briefcase_score", "elo")
+        return await self._enrich_score_models(names, html, "aa-briefcase", "briefcaseElo", "aa_briefcase_score", "elo")
 
     async def enrich_automationbench_models(self, names: list[str], html: str) -> dict[str, dict[str, Any]]:
-        return await self._enrich_score_models(names, html, "automationbench-aa", "automationBenchAA", "automationbench_aa_score", "percent")
+        return await self._enrich_score_models(names, html, "automationbench-aa", "automationBenchPartialScore", "automationbench_aa_score", "percent")
 
     async def enrich_terminalbench_models(
         self, names: list[str], html: str
@@ -419,15 +414,19 @@ class ArtificialAnalysisClient:
             }]
             selected, method = select_model(name, exact_models)
             if selected is None:
+                slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+                async with httpx.AsyncClient(base_url=self.base_url.rstrip("/"), timeout=self.timeout_seconds, follow_redirects=True) as client:
+                    detail = await client.get(f"/models/{slug}")
+                if detail.status_code == 200:
+                    selected, method = select_model(name, parse_terminalbench_catalog(detail.text))
+            if selected is None:
                 results[name] = {"matched": False, "error": "未匹配到 Terminal-Bench 4.0 模型"}
                 continue
             counts = (selected.get("canonicalEvalTokenCounts") or {}).get("terminalBench40") or {}
             answer, reasoning = counts.get("answer"), counts.get("reasoning")
             speed = selected.get("medianCanonicalAnswerOutputSpeed")
-            if not all(isinstance(value, (int, float)) for value in (answer, reasoning, speed)) or speed <= 0:
-                results[name] = {"matched": False, "error": "已匹配模型，但缺少完整 token 或速度数据"}
-                continue
-            tokens_per_task = (answer + reasoning) / 66
+            tokens_per_task = (answer + reasoning) / 66 if all(isinstance(value, (int, float)) for value in (answer, reasoning)) else None
+            time_seconds = tokens_per_task / speed if isinstance(tokens_per_task, (int, float)) and isinstance(speed, (int, float)) and speed > 0 else None
             parameters = _parameter_billions(selected)
             results[name] = {
                 "matched": True,
@@ -438,9 +437,9 @@ class ArtificialAnalysisClient:
                 "match_method": method,
                 "terminalbench_4_0_score": round_half_up(selected["terminalBench40"] * 100, 1),
                 "output_tokens": round_half_up(tokens_per_task),
-                "time_seconds": tokens_per_task / speed,
+                "time_seconds": time_seconds,
                 "output_tokens_per_task": format_thousands(tokens_per_task),
-                "time_per_task_minutes": round_half_up(tokens_per_task / speed / 60, 1),
+                "time_per_task_minutes": round_half_up(time_seconds / 60, 1) if time_seconds is not None else None,
                 "source_url": f"{self.base_url.rstrip('/')}/evaluations/terminalbench-4-0",
                 "fetched_at": datetime.now(timezone.utc).isoformat(),
             }
@@ -487,7 +486,7 @@ class ArtificialAnalysisClient:
                         "candidate_slug": slug,
                         "error": "已匹配模型，但未解析到完整指标",
                     }
-                output_tokens = metric_record["intelligenceIndexOutputTokensPerTask"].get("output")
+                output_tokens = (metric_record.get("intelligenceIndexOutputTokensPerTask") or {}).get("output")
                 time_seconds = metric_record.get("intelligenceIndexTimePerTask")
                 effort = metric_record.get("effort") or {}
                 parameters_billions = _parameter_billions(metric_record)

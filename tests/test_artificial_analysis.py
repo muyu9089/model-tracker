@@ -1,5 +1,6 @@
 import json
 import unittest
+from unittest.mock import patch
 
 from app.artificial_analysis import (
     format_thousands,
@@ -56,11 +57,17 @@ class ArtificialAnalysisTests(unittest.TestCase):
         self.assertEqual(parse_catalog(html)[0]["slug"], "demo-70b-high")
         self.assertEqual(parse_metric_record(html, "demo-70b-high")["intelligenceIndex"], 42.5)
 
+    def test_index_score_without_time_is_usable(self) -> None:
+        record = {"id": "1", "slug": "demo", "name": "Demo", "intelligenceIndex": 50,
+                  "intelligenceIndexTimePerTask": None}
+        html = flight_html("0:" + json.dumps(record, separators=(",", ":")))
+        self.assertEqual(parse_metric_record(html, "demo"), record)
+
     def test_new_benchmark_catalogs(self) -> None:
         record = {
             "id": "1", "slug": "qwen3-8-max", "name": "Qwen3.8 Max",
-            "aaBriefcase": 1812,
-            "automationBenchAA": 0.51340206185567,
+            "briefcaseElo": 1812,
+            "automationBenchPartialScore": 0.51340206185567,
         }
         html = flight_html("0:" + json.dumps(record, separators=(",", ":")))
         self.assertEqual(parse_aa_briefcase_catalog(html), [record])
@@ -84,8 +91,8 @@ class NewBenchmarkClientTests(unittest.IsolatedAsyncioTestCase):
         record = {
             "id": "1", "slug": "qwen3-8-max", "name": "Qwen3.8 Max",
             "parameters": 235, "effort": {"label": "max", "level": 60},
-            "aaBriefcase": 1812,
-            "automationBenchAA": 0.51340206185567,
+            "briefcaseElo": 1812,
+            "automationBenchPartialScore": 0.51340206185567,
         }
         html = flight_html("0:" + json.dumps(record, separators=(",", ":")))
         results = await ArtificialAnalysisClient().enrich_aa_briefcase_models(
@@ -110,15 +117,24 @@ class NewBenchmarkClientTests(unittest.IsolatedAsyncioTestCase):
             "medianCanonicalAnswerOutputSpeed": 100,
         }
         html = flight_html("0:" + json.dumps(record, separators=(",", ":")))
-        results = await ArtificialAnalysisClient().enrich_terminalbench_models(
-            ["Demo", "Missing"], html
-        )
+        with patch("app.artificial_analysis.httpx.AsyncClient") as client:
+            client.return_value.__aenter__.return_value.get.return_value.status_code = 404
+            results = await ArtificialAnalysisClient().enrich_terminalbench_models(
+                ["Demo", "Missing"], html
+            )
         self.assertEqual(results["Demo"]["terminalbench_4_0_score"], 50.0)
         self.assertEqual(results["Demo"]["output_tokens_per_task"], "2 K")
         self.assertEqual(results["Demo"]["time_per_task_minutes"], 0.3)
         self.assertEqual(results["Demo"]["parameters_billions"], 70.0)
         self.assertEqual(results["Demo"]["reasoning_effort"], "high")
         self.assertFalse(results["Missing"]["matched"])
+
+    async def test_terminalbench_keeps_score_without_speed(self) -> None:
+        record = {"id": "1", "slug": "demo", "name": "Demo", "terminalBench40": 0.071}
+        html = flight_html("0:" + json.dumps(record, separators=(",", ":")))
+        result = await ArtificialAnalysisClient().enrich_terminalbench_models(["Demo"], html)
+        self.assertEqual(result["Demo"]["terminalbench_4_0_score"], 7.1)
+        self.assertIsNone(result["Demo"]["time_per_task_minutes"])
 
     def test_largest_parameters_then_highest_effort(self) -> None:
         catalog = [
