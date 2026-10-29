@@ -8,9 +8,38 @@ from fastapi.testclient import TestClient
 from app.config import Settings, get_settings
 from app.db import TrackerRepository
 from app.main import app
+from app.qwen_agent import ModelInfo
 
 
 class DatabasePageTests(unittest.TestCase):
+    def test_supplement_fills_missing_fields_and_shows_log(self) -> None:
+        with TemporaryDirectory() as directory:
+            database = Path(directory) / "tracker.db"
+            repository = TrackerRepository(database)
+            repository.add_model({"name": "Demo"})
+            repository.upsert_profile({"model_name": "Demo", "vendor_or_organization": "Existing"})
+            app.dependency_overrides[get_settings] = lambda: Settings(
+                tracker_database_path=str(database), tracker_scan_token="secret"
+            )
+            researched = {field: None for field in ModelInfo.model_fields}
+            researched.update({"model_name": "Demo", "vendor_or_organization": "Replacement",
+                               "open_source_attribute": "开源", "region": "中国"})
+            try:
+                with patch("app.qwen_agent.QwenAgent.research_model_info", new_callable=AsyncMock) as research:
+                    research.return_value = researched
+                    client = TestClient(app)
+                    self.assertEqual(client.post("/models/supplement").status_code, 401)
+                    response = client.post("/models/supplement", headers={"X-Scan-Token": "secret"})
+                self.assertEqual(response.json(), {"succeeded": 1, "failed": 0})
+                self.assertEqual(repository.rows(
+                    "SELECT vendor_or_organization, open_source_attribute, region FROM model_profiles"
+                )[0], {"vendor_or_organization": "Existing", "open_source_attribute": "开源", "region": "中国"})
+                page = client.get("/?table=supplement").text
+                self.assertIn("Demo：补充完成", page)
+                self.assertNotIn('href="/?table=scan_run_models"', page)
+            finally:
+                app.dependency_overrides.clear()
+
     def test_delete_model_requires_token_and_removes_related_data(self) -> None:
         with TemporaryDirectory() as directory:
             database = Path(directory) / "tracker.db"

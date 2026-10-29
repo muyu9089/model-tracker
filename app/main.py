@@ -1,4 +1,5 @@
 from datetime import date
+from datetime import datetime, timezone
 from html import escape
 from pathlib import Path
 from secrets import compare_digest
@@ -100,10 +101,10 @@ def _database_page(repository: TrackerRepository, table: str) -> str:
         name: repository.rows(f'SELECT COUNT(*) AS count FROM "{name}"')[0]["count"]
         for name in DATABASE_TABLES
     }
-    tabs = f'<a class="{"active" if table == "overview" else ""}" href="/?table=overview">模型总览<small>{counts["models"]}</small></a>' + "".join(
+    tabs = f'<a class="{"active" if table == "overview" else ""}" href="/?table=overview">模型总览<small>{counts["models"]}</small></a><a class="{"active" if table == "supplement" else ""}" href="/?table=supplement">补充信息</a>' + "".join(
         f'<a class="{"active" if name == table else ""}" href="/?table={name}">'
         f'{label}<small>{counts[name]}</small></a>'
-        for name, label in DATABASE_TABLES.items()
+        for name, label in DATABASE_TABLES.items() if name != "scan_run_models"
     )
     if table == "overview":
         models = repository.rows(
@@ -139,6 +140,11 @@ def _database_page(repository: TrackerRepository, table: str) -> str:
                 )
             ) + "</tr>")
         body = "".join(body_rows)
+    elif table == "supplement":
+        columns = ("时间", "日志")
+        log_path = repository.path.parent / "补充信息.log"
+        lines = log_path.read_text(encoding="utf-8").splitlines()[-200:] if log_path.exists() else []
+        body = "".join(f"<tr><td>{_cell(line.partition(' | ')[0])}</td><td>{_cell(line.partition(' | ')[2])}</td></tr>" for line in reversed(lines))
     else:
         columns = [row["name"] for row in repository.rows(f'PRAGMA table_info("{table}")')]
         rows = repository.rows(f'SELECT * FROM "{table}" ORDER BY rowid DESC LIMIT 200')
@@ -148,7 +154,7 @@ def _database_page(repository: TrackerRepository, table: str) -> str:
         )
     header = "".join(f"<th>{escape(column)}</th>" for column in columns)
     body = body or f'<tr><td class="empty" colspan="{len(columns)}">暂无数据</td></tr>'
-    title = "模型总览" if table == "overview" else DATABASE_TABLES[table]
+    title = "模型总览" if table == "overview" else "补充信息" if table == "supplement" else DATABASE_TABLES[table]
     subtitle = "全部模型 · 可删除" if table == "overview" else "最新 200 行 · 只读"
     return f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
@@ -160,9 +166,19 @@ nav a.active{{background:#155eef;color:white;border-color:#155eef}}small{{opacit
 table{{width:100%;border-collapse:collapse;white-space:nowrap}}th,td{{padding:11px 14px;border-bottom:1px solid #eaecf0;text-align:left;vertical-align:top}}th{{position:sticky;top:0;background:#f9fafb;color:#475467;font-size:12px}}
 td{{max-width:420px;overflow:hidden;text-overflow:ellipsis}}tr:last-child td{{border-bottom:0}}tr:hover td{{background:#f9fafb}}details{{white-space:normal}}summary{{cursor:pointer}}pre{{max-width:800px;white-space:pre-wrap;word-break:break-word}}.empty{{padding:40px;text-align:center;color:#98a2b3}}
 </style></head><body><main><h1>模型数据库</h1><p>{title} · {subtitle}</p><nav aria-label="数据菜单">{tabs}</nav>
-{'<p><label>删除令牌 <input id="delete-token" type="password" autocomplete="off"></label></p>' if table == 'overview' else ''}
+{'<p><label>操作令牌 <input id="delete-token" type="password" autocomplete="off"></label> <button type="button" onclick="supplementInfo()">补充缺失信息</button></p>' if table == 'overview' else ''}
 <section><table><thead><tr>{header}</tr></thead><tbody>{body}</tbody></table></section></main>
 <script>
+async function supplementInfo() {{
+  const token = document.getElementById('delete-token').value;
+  if (!token) {{ alert('请输入操作令牌'); return; }}
+  if (!confirm('开始补充缺失的模型信息？')) return;
+  try {{
+    const response = await fetch('/models/supplement', {{method: 'POST', headers: {{'X-Scan-Token': token}}}});
+    if (!response.ok) {{ alert((await response.json()).detail || '补充失败'); return; }}
+    location.href = '/?table=supplement';
+  }} catch {{ alert('补充失败，请检查网络连接'); }}
+}}
 async function deleteModel(button) {{
   const token = document.getElementById('delete-token').value;
   if (!token) {{ alert('请输入删除令牌'); return; }}
@@ -236,7 +252,7 @@ def database_view(
     table: str = Query(default="models"),
     repository: TrackerRepository = Depends(get_repository),
 ) -> HTMLResponse:
-    if table != "overview" and table not in DATABASE_TABLES:
+    if table not in ("overview", "supplement") and table not in DATABASE_TABLES:
         raise HTTPException(status_code=404, detail="数据表不存在")
     return HTMLResponse(_database_page(repository, table))
 
@@ -264,6 +280,53 @@ def delete_model(
     if not repository.delete_model(model_id):
         raise HTTPException(status_code=404, detail="模型不存在")
     return {"deleted": True}
+
+
+@app.post("/models/supplement")
+async def supplement_models(
+    x_scan_token: str = Header(default=""),
+    settings: Settings = Depends(get_settings),
+    repository: TrackerRepository = Depends(get_repository),
+) -> dict[str, int]:
+    if not settings.tracker_scan_token:
+        raise HTTPException(status_code=503, detail="未配置 TRACKER_SCAN_TOKEN")
+    if not compare_digest(x_scan_token.encode(), settings.tracker_scan_token.encode()):
+        raise HTTPException(status_code=401, detail="无效的扫描令牌")
+    from .model_tracker import SCAN_LOCK
+    from .qwen_agent import ModelInfo, QwenAgent
+
+    if SCAN_LOCK.locked():
+        raise HTTPException(status_code=409, detail="扫描或补充正在进行中")
+    async with SCAN_LOCK:
+        missing = repository.rows(
+            """SELECT m.model_name, p.* FROM models m
+               LEFT JOIN model_profiles p ON p.model_id=m.id
+               WHERE p.model_id IS NULL
+                  OR NULLIF(TRIM(p.vendor_or_organization), '') IS NULL
+                  OR NULLIF(TRIM(p.open_source_attribute), '') IS NULL
+                  OR NULLIF(TRIM(p.region), '') IS NULL ORDER BY m.id"""
+        )
+        agent = QwenAgent(settings)
+        succeeded = 0
+        failed = 0
+        with (repository.path.parent / "补充信息.log").open("a", encoding="utf-8") as log:
+            if not missing:
+                log.write(f"{datetime.now(timezone.utc).isoformat()} | 无缺失信息\n")
+            for row in missing:
+                name = row["model_name"]
+                try:
+                    profile = ModelInfo.model_validate(await agent.research_model_info(name)).model_dump()
+                    profile["model_name"] = name
+                    profile.update({field: row[field] for field in PROFILE_FIELDS if row[field]})
+                    repository.upsert_profile(profile)
+                    succeeded += 1
+                    message = f"{name}：补充完成"
+                except Exception as exc:
+                    failed += 1
+                    message = f"{name}：补充失败（{type(exc).__name__}）"
+                log.write(f"{datetime.now(timezone.utc).isoformat()} | {' '.join(message.splitlines())}\n")
+                log.flush()
+    return {"succeeded": succeeded, "failed": failed}
 
 
 @app.post("/models/scan")
