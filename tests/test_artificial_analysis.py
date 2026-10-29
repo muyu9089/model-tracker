@@ -6,7 +6,8 @@ from app.artificial_analysis import (
     parse_catalog,
     parse_index_update_text,
     parse_metric_record,
-    parse_tau_banking_catalog,
+    parse_aa_briefcase_catalog,
+    parse_automationbench_catalog,
     parse_terminalbench_catalog,
     round_half_up,
     select_model,
@@ -55,15 +56,15 @@ class ArtificialAnalysisTests(unittest.TestCase):
         self.assertEqual(parse_catalog(html)[0]["slug"], "demo-70b-high")
         self.assertEqual(parse_metric_record(html, "demo-70b-high")["intelligenceIndex"], 42.5)
 
-    def test_tau_banking_payload_contains_score_tokens_and_speed(self) -> None:
+    def test_new_benchmark_catalogs(self) -> None:
         record = {
             "id": "1", "slug": "qwen3-8-max", "name": "Qwen3.8 Max",
-            "tauBanking": 0.51340206185567,
-            "canonicalEvalTokenCounts": {"tauBanking": {"answer": 280112, "reasoning": 639858}},
-            "medianCanonicalAnswerOutputSpeed": 52.3251837412224,
+            "aaBriefcase": 1812,
+            "automationBenchAA": 0.51340206185567,
         }
         html = flight_html("0:" + json.dumps(record, separators=(",", ":")))
-        self.assertEqual(parse_tau_banking_catalog(html), [record])
+        self.assertEqual(parse_aa_briefcase_catalog(html), [record])
+        self.assertEqual(parse_automationbench_catalog(html), [record])
 
     def test_terminalbench_payload_contains_score_tokens_and_speed(self) -> None:
         record = {
@@ -78,22 +79,21 @@ class ArtificialAnalysisTests(unittest.TestCase):
         self.assertEqual(parse_terminalbench_catalog(html), [record])
 
 
-class TauBankingClientTests(unittest.IsolatedAsyncioTestCase):
-    async def test_enrichment_uses_97_tasks_and_marks_missing_models_unmatched(self) -> None:
+class NewBenchmarkClientTests(unittest.IsolatedAsyncioTestCase):
+    async def test_enrichment_preserves_elo_and_converts_percent(self) -> None:
         record = {
             "id": "1", "slug": "qwen3-8-max", "name": "Qwen3.8 Max",
             "parameters": 235, "effort": {"label": "max", "level": 60},
-            "tauBanking": 0.51340206185567,
-            "canonicalEvalTokenCounts": {"tauBanking": {"answer": 280112, "reasoning": 639858}},
-            "medianCanonicalAnswerOutputSpeed": 52.3251837412224,
+            "aaBriefcase": 1812,
+            "automationBenchAA": 0.51340206185567,
         }
         html = flight_html("0:" + json.dumps(record, separators=(",", ":")))
-        results = await ArtificialAnalysisClient().enrich_tau_banking_models(
+        results = await ArtificialAnalysisClient().enrich_aa_briefcase_models(
             ["Qwen3.8 Max", "Qwen3.7 Max", "Unrelated Model"], html
         )
-        self.assertEqual(results["Qwen3.8 Max"]["tau3_banking_score"], 51.3)
-        self.assertEqual(results["Qwen3.8 Max"]["output_tokens_per_task"], "9 K")
-        self.assertEqual(results["Qwen3.8 Max"]["time_per_task_minutes"], 3.0)
+        self.assertEqual(results["Qwen3.8 Max"]["aa_briefcase_score"], 1812)
+        percent = await ArtificialAnalysisClient().enrich_automationbench_models(["Qwen3.8 Max"], html)
+        self.assertEqual(percent["Qwen3.8 Max"]["automationbench_aa_score"], 51.3)
         self.assertEqual(results["Qwen3.8 Max"]["parameters_billions"], 235.0)
         self.assertEqual(results["Qwen3.8 Max"]["reasoning_effort"], "max")
         self.assertFalse(results["Qwen3.7 Max"]["matched"])

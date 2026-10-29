@@ -29,11 +29,12 @@ class DatabasePageTests(unittest.TestCase):
                      patch("app.artificial_analysis.ArtificialAnalysisClient") as aa:
                 research.return_value = researched
                 client_aa = aa.return_value
-                for fetch in ("fetch_models_html", "fetch_terminalbench_html", "fetch_tau_banking_html"):
+                for fetch in ("fetch_models_html", "fetch_terminalbench_html", "fetch_aa_briefcase_html", "fetch_automationbench_html"):
                     setattr(client_aa, fetch, AsyncMock(return_value="html"))
                 for enrich, score in (("enrich_models", "intelligence_index"),
                                       ("enrich_terminalbench_models", "terminalbench_4_0_score"),
-                                      ("enrich_tau_banking_models", "tau3_banking_score")):
+                                      ("enrich_aa_briefcase_models", "aa_briefcase_score"),
+                                      ("enrich_automationbench_models", "automationbench_aa_score")):
                     setattr(client_aa, enrich, AsyncMock(return_value={"Demo": {
                         "matched": True, score: 42, "model_name": "Demo",
                         "slug": "demo", "match_method": "exact", "source_url": "https://example.test",
@@ -45,7 +46,7 @@ class DatabasePageTests(unittest.TestCase):
             self.assertEqual(response, {"succeeded": 1, "failed": 0})
             self.assertEqual([row["score_value"] for row in repository.rows(
                 "SELECT score_value FROM benchmark_results ORDER BY benchmark_id"
-            )], [42, 42, 42])
+            )], [42, 42, 42, 42])
             self.assertEqual(repository.rows(
                 "SELECT vendor_or_organization, open_source_attribute, region FROM model_profiles"
             )[0], {"vendor_or_organization": "Existing", "open_source_attribute": "开源", "region": "中国"})
@@ -76,13 +77,17 @@ class DatabasePageTests(unittest.TestCase):
                 client_aa = aa.return_value
                 client_aa.fetch_models_html = AsyncMock(return_value="html")
                 client_aa.fetch_terminalbench_html = AsyncMock(return_value="html")
-                client_aa.fetch_tau_banking_html = AsyncMock(return_value="html")
+                client_aa.fetch_aa_briefcase_html = AsyncMock(return_value="html")
+                client_aa.fetch_automationbench_html = AsyncMock(return_value="html")
                 client_aa.enrich_models = AsyncMock(return_value={"Demo": metadata | {"intelligence_index": 55}})
                 client_aa.enrich_terminalbench_models = AsyncMock(return_value={"Demo": {
                     "matched": False, "error": "未匹配到模型"
                 }})
-                client_aa.enrich_tau_banking_models = AsyncMock(return_value={"Demo": metadata | {
-                    "tau3_banking_score": 20
+                client_aa.enrich_aa_briefcase_models = AsyncMock(return_value={"Demo": metadata | {
+                    "aa_briefcase_score": 20
+                }})
+                client_aa.enrich_automationbench_models = AsyncMock(return_value={"Demo": metadata | {
+                    "automationbench_aa_score": 20
                 }})
                 response = asyncio.run(supplement_models("secret", settings, repository))
                 research.assert_not_awaited()
@@ -171,9 +176,9 @@ class DatabasePageTests(unittest.TestCase):
         self.assertIn("&lt;Demo&gt;", response.text)
         self.assertIn("&lt;Example&gt;", response.text)
         self.assertNotIn("<Demo>", response.text)
-        self.assertIn("<td><div>42</div><div>50%</div><div>—</div></td>", response.text)
+        self.assertIn("<td><div>42</div><div>50%</div><div>—</div><div>—</div></td>", response.text)
         for value in ("模型名称", "评测项", "评测结果", "所属组织", "开源状态", "所属地域",
-                      "Intelligence Index", "Terminal-Bench 4.0", "τ³-Banking", "42", "开源", "中国", "—"):
+                      "Intelligence Index", "Terminal-Bench 4.0", "AA-Briefcase v1.1", "AutomationBench-AA", "42", "开源", "中国", "—"):
             self.assertIn(value, response.text)
         self.assertIn('href="/?table=models"', response.text)
 

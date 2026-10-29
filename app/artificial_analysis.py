@@ -171,13 +171,22 @@ def parse_metric_record(html: str, slug: str) -> dict[str, Any] | None:
     return None
 
 
-def parse_tau_banking_catalog(html: str) -> list[dict[str, Any]]:
-    """Extract evaluated models and their 𝜏³-Banking inputs from the page payload."""
+def parse_aa_briefcase_catalog(html: str) -> list[dict[str, Any]]:
+    """Extract evaluated AA-Briefcase v1.1 models from the page payload."""
     return [
         model for model in _decode_objects(_next_flight_text(html), '{"id":"')
         if isinstance(model.get("slug"), str)
         and isinstance(model.get("name"), str)
-        and isinstance(model.get("tauBanking"), (int, float))
+        and isinstance(model.get("aaBriefcase"), (int, float))
+    ]
+
+
+def parse_automationbench_catalog(html: str) -> list[dict[str, Any]]:
+    return [
+        model for model in _decode_objects(_next_flight_text(html), '{"id":"')
+        if isinstance(model.get("slug"), str)
+        and isinstance(model.get("name"), str)
+        and isinstance(model.get("automationBenchAA"), (int, float))
     ]
 
 
@@ -313,7 +322,7 @@ class ArtificialAnalysisClient:
             response.raise_for_status()
             return response.text
 
-    async def fetch_tau_banking_html(self) -> str:
+    async def fetch_aa_briefcase_html(self) -> str:
         headers = {"User-Agent": "Mozilla/5.0 (compatible; AIHotModelTracker/1.1)"}
         async with httpx.AsyncClient(
             base_url=self.base_url.rstrip("/"),
@@ -321,7 +330,17 @@ class ArtificialAnalysisClient:
             timeout=self.timeout_seconds,
             follow_redirects=True,
         ) as client:
-            response = await client.get("/evaluations/tau3-banking")
+            response = await client.get("/evaluations/aa-briefcase")
+            response.raise_for_status()
+            return response.text
+
+    async def fetch_automationbench_html(self) -> str:
+        headers = {"User-Agent": "Mozilla/5.0 (compatible; AIHotModelTracker/1.1)"}
+        async with httpx.AsyncClient(
+            base_url=self.base_url.rstrip("/"), headers=headers,
+            timeout=self.timeout_seconds, follow_redirects=True,
+        ) as client:
+            response = await client.get("/evaluations/automationbench-aa")
             response.raise_for_status()
             return response.text
 
@@ -337,16 +356,18 @@ class ArtificialAnalysisClient:
             response.raise_for_status()
             return response.text
 
-    async def enrich_tau_banking_models(
-        self, names: list[str], html: str
+    async def _enrich_score_models(
+        self, names: list[str], html: str, code: str, key: str, score_field: str,
+        unit: str,
     ) -> dict[str, dict[str, Any]]:
-        catalog = parse_tau_banking_catalog(html)
+        catalog = (parse_aa_briefcase_catalog(html) if code == "aa-briefcase"
+                   else parse_automationbench_catalog(html))
         if not catalog:
-            raise RuntimeError("未能从 Artificial Analysis 页面解析 𝜏³-Banking 数据")
+            raise RuntimeError(f"未能从 Artificial Analysis 页面解析 {code} 数据")
         results = {}
         for name in names:
-            key = normalize_model_name(name)
-            exact_models = [model for model in catalog if key in {
+            normalized_name = normalize_model_name(name)
+            exact_models = [model for model in catalog if normalized_name in {
                 normalize_model_name(value)
                 for value in (
                     model["slug"], model["name"], model.get("shortName") or "",
@@ -356,15 +377,8 @@ class ArtificialAnalysisClient:
             }]
             selected, method = select_model(name, exact_models)
             if selected is None:
-                results[name] = {"matched": False, "error": "未匹配到 𝜏³-Banking 模型"}
+                results[name] = {"matched": False, "error": f"未匹配到 {code} 模型"}
                 continue
-            counts = (selected.get("canonicalEvalTokenCounts") or {}).get("tauBanking") or {}
-            answer, reasoning = counts.get("answer"), counts.get("reasoning")
-            speed = selected.get("medianCanonicalAnswerOutputSpeed")
-            if not all(isinstance(value, (int, float)) for value in (answer, reasoning, speed)) or speed <= 0:
-                results[name] = {"matched": False, "error": "已匹配模型，但缺少完整 token 或速度数据"}
-                continue
-            tokens_per_task = (answer + reasoning) / 97
             parameters = _parameter_billions(selected)
             results[name] = {
                 "matched": True,
@@ -373,15 +387,18 @@ class ArtificialAnalysisClient:
                 "parameters_billions": parameters if parameters >= 0 else None,
                 "reasoning_effort": _reasoning_effort(selected),
                 "match_method": method,
-                "tau3_banking_score": round_half_up(selected["tauBanking"] * 100, 1),
-                "output_tokens": round_half_up(tokens_per_task),
-                "time_seconds": tokens_per_task / speed,
-                "output_tokens_per_task": format_thousands(tokens_per_task),
-                "time_per_task_minutes": round_half_up(tokens_per_task / speed / 60, 1),
-                "source_url": f"{self.base_url.rstrip('/')}/evaluations/tau3-banking",
+                score_field: round_half_up(selected[key] * (100 if unit == "percent" else 1),
+                                           1 if unit == "percent" else 0),
+                "source_url": f"{self.base_url.rstrip('/')}/evaluations/{code}",
                 "fetched_at": datetime.now(timezone.utc).isoformat(),
             }
         return results
+
+    async def enrich_aa_briefcase_models(self, names: list[str], html: str) -> dict[str, dict[str, Any]]:
+        return await self._enrich_score_models(names, html, "aa-briefcase", "aaBriefcase", "aa_briefcase_score", "elo")
+
+    async def enrich_automationbench_models(self, names: list[str], html: str) -> dict[str, dict[str, Any]]:
+        return await self._enrich_score_models(names, html, "automationbench-aa", "automationBenchAA", "automationbench_aa_score", "percent")
 
     async def enrich_terminalbench_models(
         self, names: list[str], html: str

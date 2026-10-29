@@ -119,10 +119,11 @@ SQLite 是唯一事实源，默认数据库为 `data/model_tracker.db`。扫描�
 - `data/seen_models.json`：已经发现过的模型，用于跨周期去重；
 - `data/reports/weekly_models_*.json`：机器可读结果；
 - `data/reports/weekly_models_*.md`：便于查看的中文报告。
-- `存量模型信息记录状态.json`：按 `intelligence_index`、`terminalbench-4-0` 和 `tau3-banking` 分层保存模型名称、记录状态及可选的更新错误；三个层级的模型名称保持同步，各自独立更新状态；
+- `存量模型信息记录状态.json`：按 `intelligence_index`、`terminalbench-4-0`、`aa-briefcase` 和 `automationbench-aa` 分层保存模型名称、记录状态及可选的更新错误；各层模型名称保持同步，各自独立更新状态；
 - `data/all_model_data.json`：全部模型的最新 AA 三项指标；
 - `data/terminalbench_4-0_model_data.json`：Terminal-Bench 4.0 分数、每任务输出 token 和每任务耗时；
-- `data/tau3_banking_model_data.json`：𝜏³-Banking 分数（百分比）、每任务输出 token 和每任务耗时；
+- `data/aa_briefcase_model_data.json`：AA-Briefcase v1.1 Elo 分数；
+- `data/automationbench_aa_model_data.json`：AutomationBench-AA 百分比分数；
 - `model_info.json`：按 `intelligence_index` 层级的模型名称联网采集、对应导入模板 A–T 列的资料。
 - `data/exports/model_tracker.json`：包含 `schema_version` 的统一输出。
 
@@ -157,10 +158,11 @@ AA 型号选择保留原有本地规则匹配：依次比较 AA 的型号 slug�
 python -m app.model_tracker --terminalbench-4-0
 ```
 
-启用 Artificial Analysis 时，每周扫描也会读取 [𝜏³-Banking 排行榜](https://artificialanalysis.ai/evaluations/tau3-banking)，按状态表 `tau3-banking` 层的模型名称匹配评测结果。分数保存为百分比并保留一位小数；输出 token 按千位保存为 `xx K`；耗时按分钟保留一位小数。只有三个指标都可计算时，该层记录才标为“已记录”。单独更新该层可运行：
+启用 Artificial Analysis 时，每周扫描也会读取 [AA-Briefcase v1.1](https://artificialanalysis.ai/evaluations/aa-briefcase) 和 [AutomationBench-AA](https://artificialanalysis.ai/evaluations/automationbench-aa) 排行榜。前者保存 Elo 分数，后者保存百分比分数。单独更新可运行：
 
 ```bash
-python -m app.model_tracker --tau3-banking
+python -m app.model_tracker --aa-briefcase
+python -m app.model_tracker --automationbench-aa
 ```
 
 每周扫描发现新增模型时，会立即调用 Qwen 联网搜索并采集“导入模板.xlsx”中 B–T 列资料，默认写入 `model_info.json`。没有新增模型时不会执行 model-info 获取，存量模型也不会重新查询。每个新模型成功后立即保存；可用 `--model-info-output` 指定其他输出路径。

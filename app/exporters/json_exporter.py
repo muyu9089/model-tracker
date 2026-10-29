@@ -12,7 +12,8 @@ STATUS_LABELS = {"pending": "待更新", "recorded": "已记录", "failed": "待
 SCORE_FIELDS = {
     "intelligence_index": "intelligence_index",
     "terminalbench-4-0": "terminalbench_4_0_score",
-    "tau3-banking": "tau3_banking_score",
+    "aa-briefcase": "aa_briefcase_score",
+    "automationbench-aa": "automationbench_aa_score",
 }
 
 
@@ -34,6 +35,8 @@ def _display_result(code: str, row: dict[str, Any]) -> dict[str, Any]:
     score_field = SCORE_FIELDS[code]
     score = row.get("score_value")
     if code == "intelligence_index":
+        score = round_half_up(score)
+    elif code == "aa-briefcase":
         score = round_half_up(score)
     elif isinstance(score, (int, float)):
         score = round_half_up(score, 1)
@@ -115,7 +118,8 @@ class JsonExporter:
         atomic_write_json(
             self.data_dir / "terminalbench_4-0_model_data.json", results["terminalbench-4-0"]
         )
-        atomic_write_json(self.data_dir / "tau3_banking_model_data.json", results["tau3-banking"])
+        atomic_write_json(self.data_dir / "aa_briefcase_model_data.json", results["aa-briefcase"])
+        atomic_write_json(self.data_dir / "automationbench_aa_model_data.json", results["automationbench-aa"])
         atomic_write_json(self.model_info_path, profiles)
 
         profiles_by_name = {normalize_name(row["model_name"]): row for row in profiles}

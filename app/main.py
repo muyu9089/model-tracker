@@ -342,7 +342,8 @@ async def supplement_models(
         benchmark_fields = {
             "intelligence_index": ("fetch_models_html", "enrich_models", "intelligence_index"),
             "terminalbench-4-0": ("fetch_terminalbench_html", "enrich_terminalbench_models", "terminalbench_4_0_score"),
-            "tau3-banking": ("fetch_tau_banking_html", "enrich_tau_banking_models", "tau3_banking_score"),
+            "aa-briefcase": ("fetch_aa_briefcase_html", "enrich_aa_briefcase_models", "aa_briefcase_score"),
+            "automationbench-aa": ("fetch_automationbench_html", "enrich_automationbench_models", "automationbench_aa_score"),
         }
         if settings.artificial_analysis_enabled:
             aa_client = ArtificialAnalysisClient(

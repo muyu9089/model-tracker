@@ -12,7 +12,8 @@ from .migrations import migrate
 BENCHMARKS = {
     "intelligence_index": "Intelligence Index",
     "terminalbench-4-0": "Terminal-Bench 4.0",
-    "tau3-banking": "τ³-Banking",
+    "aa-briefcase": "AA-Briefcase v1.1",
+    "automationbench-aa": "AutomationBench-AA",
 }
 PROFILE_FIELDS = (
     "open_source_attribute", "vendor_or_organization", "model_series",
@@ -46,7 +47,8 @@ class TrackerRepository:
         migrate(self.path)
         with transaction(self.path) as connection:
             connection.executemany(
-                "INSERT OR IGNORE INTO benchmarks(code, display_name) VALUES (?, ?)",
+                """INSERT INTO benchmarks(code, display_name) VALUES (?, ?)
+                   ON CONFLICT(code) DO UPDATE SET display_name=excluded.display_name""",
                 BENCHMARKS.items(),
             )
 
@@ -210,7 +212,8 @@ class TrackerRepository:
                 score = metric.get({
                     "intelligence_index": "intelligence_index",
                     "terminalbench-4-0": "terminalbench_4_0_score",
-                    "tau3-banking": "tau3_banking_score",
+                    "aa-briefcase": "aa_briefcase_score",
+                    "automationbench-aa": "automationbench_aa_score",
                 }[benchmark_code])
                 tokens = metric.get("output_tokens")
                 if not isinstance(tokens, (int, float)):
@@ -235,7 +238,7 @@ class TrackerRepository:
                        match_method=excluded.match_method, source_url=excluded.source_url,
                        collected_at=excluded.collected_at""",
                     (model_id, benchmark_id, score,
-                     "index" if benchmark_code == "intelligence_index" else "percent",
+                     "index" if benchmark_code == "intelligence_index" else "elo" if benchmark_code == "aa-briefcase" else "percent",
                      int(round(tokens)) if isinstance(tokens, (int, float)) else None,
                      float(seconds) if isinstance(seconds, (int, float)) else None,
                      metric.get("model_name"), metric.get("slug"),

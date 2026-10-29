@@ -82,9 +82,12 @@ async def update_benchmark(
         if code == "terminalbench-4-0":
             html = await aa_client.fetch_terminalbench_html()
             metrics = await aa_client.enrich_terminalbench_models(names, html)
-        elif code == "tau3-banking":
-            html = await aa_client.fetch_tau_banking_html()
-            metrics = await aa_client.enrich_tau_banking_models(names, html)
+        elif code == "aa-briefcase":
+            html = await aa_client.fetch_aa_briefcase_html()
+            metrics = await aa_client.enrich_aa_briefcase_models(names, html)
+        elif code == "automationbench-aa":
+            html = await aa_client.fetch_automationbench_html()
+            metrics = await aa_client.enrich_automationbench_models(names, html)
         else:
             raise ValueError(f"未知 benchmark：{code}")
         repository.save_benchmark_metrics(code, names, metrics)
@@ -171,7 +174,8 @@ async def _scan_once(
             )
             await update_intelligence_index(repository, aa_client)
             await update_benchmark(repository, aa_client, "terminalbench-4-0")
-            await update_benchmark(repository, aa_client, "tau3-banking")
+            await update_benchmark(repository, aa_client, "aa-briefcase")
+            await update_benchmark(repository, aa_client, "automationbench-aa")
         repository.finish_run(run_id, "completed", len(new_models))
     except Exception as exc:
         repository.finish_run(run_id, "failed", len(new_models), str(exc))
@@ -247,7 +251,8 @@ def main() -> None:
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--once", action="store_true", help="立即执行一次扫描")
     mode.add_argument("--daemon", action="store_true", help="启动常驻定时任务")
-    mode.add_argument("--tau3-banking", action="store_true", help="仅更新 Tau3-Banking")
+    mode.add_argument("--aa-briefcase", action="store_true", help="仅更新 AA-Briefcase v1.1")
+    mode.add_argument("--automationbench-aa", action="store_true", help="仅更新 AutomationBench-AA")
     mode.add_argument("--terminalbench-4-0", action="store_true", help="仅更新 Terminal-Bench 4.0")
     mode.add_argument("--export-json", action="store_true", help="仅从数据库重新生成 JSON")
     mode.add_argument("--migrate-legacy", action="store_true", help="导入旧 JSON")
@@ -273,12 +278,12 @@ def main() -> None:
     if args.export_json:
         exporter.export_all()
         return
-    if args.tau3_banking or args.terminalbench_4_0:
+    if args.aa_briefcase or args.automationbench_aa or args.terminalbench_4_0:
         client = ArtificialAnalysisClient(
             base_url=settings.artificial_analysis_base_url,
             timeout_seconds=settings.artificial_analysis_timeout_seconds,
         )
-        code = "tau3-banking" if args.tau3_banking else "terminalbench-4-0"
+        code = "aa-briefcase" if args.aa_briefcase else "automationbench-aa" if args.automationbench_aa else "terminalbench-4-0"
         asyncio.run(update_benchmark(repository, client, code))
         if not args.no_export and settings.tracker_json_export_enabled:
             exporter.export_all()

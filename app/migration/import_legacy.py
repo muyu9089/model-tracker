@@ -21,7 +21,8 @@ def _metric_from_legacy(code: str, record: dict[str, Any]) -> dict[str, Any]:
     score_field = {
         "intelligence_index": "intelligence_index",
         "terminalbench-4-0": "terminalbench_4_0_score",
-        "tau3-banking": "tau3_banking_score",
+        "aa-briefcase": "aa_briefcase_score",
+        "automationbench-aa": "automationbench_aa_score",
     }[code]
     return {
         "matched": True,
@@ -93,7 +94,8 @@ def import_legacy(
     legacy_result_files = {
         "intelligence_index": data_dir / "all_model_data.json",
         "terminalbench-4-0": data_dir / "terminalbench_4-0_model_data.json",
-        "tau3-banking": data_dir / "tau3_banking_model_data.json",
+        "aa-briefcase": data_dir / "aa_briefcase_model_data.json",
+        "automationbench-aa": data_dir / "automationbench_aa_model_data.json",
     }
     for code, path in legacy_result_files.items():
         records = _read_json(path, [])

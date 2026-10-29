@@ -23,21 +23,27 @@ class DatabaseTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "tracker.db"
             repository = TrackerRepository(path)
+            from app.db.connection import transaction
+            with transaction(path) as connection:
+                connection.execute("UPDATE benchmarks SET display_name='AA-Briefcase' WHERE code='aa-briefcase'")
             TrackerRepository(path)
             first_id, created = repository.add_model({"name": "Demo-2"})
             second_id, duplicate = repository.add_model({"name": "demo 2"})
-            from app.db.connection import transaction
             with transaction(path) as connection:
                 version = connection.execute("PRAGMA user_version").fetchone()[0]
+                display_name = connection.execute(
+                    "SELECT display_name FROM benchmarks WHERE code='aa-briefcase'"
+                ).fetchone()[0]
                 state_count = connection.execute(
                     "SELECT COUNT(*) FROM benchmark_states WHERE model_id=?", (first_id,)
                 ).fetchone()[0]
 
         self.assertEqual(version, 1)
+        self.assertEqual(display_name, "AA-Briefcase v1.1")
         self.assertTrue(created)
         self.assertFalse(duplicate)
         self.assertEqual(first_id, second_id)
-        self.assertEqual(state_count, 3)
+        self.assertEqual(state_count, 4)
 
     def test_recorded_result_without_match_metadata_is_refreshed(self) -> None:
         with TemporaryDirectory() as directory:
@@ -97,7 +103,8 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual({row["code"]: row["status"] for row in states}, {
             "intelligence_index": "pending",
             "terminalbench-4-0": "recorded",
-            "tau3-banking": "pending",
+            "aa-briefcase": "pending",
+            "automationbench-aa": "pending",
         })
 
 
@@ -114,7 +121,7 @@ class MigrationAndExportTests(unittest.TestCase):
                     {"model_name": "Demo-2", "record_status": "已记录"},
                     {"model_name": "demo 2", "record_status": "待更新"},
                 ],
-                "tau3-banking": [{"model_name": "Demo-2", "record_status": "已记录"}],
+                "aa-briefcase": [{"model_name": "Demo-2", "record_status": "已记录"}],
             }), encoding="utf-8")
             (data / "seen_models.json").write_text(json.dumps({
                 "demo2": {"name": "Demo-2", "first_seen_at": "2026-01-01T00:00:00+00:00"}
