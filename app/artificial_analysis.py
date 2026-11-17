@@ -469,10 +469,22 @@ class ArtificialAnalysisClient:
 
             async def enrich(name: str) -> tuple[str, dict[str, Any]]:
                 selected, method = select_model(name, catalog)
+                metric_record = None
+                if re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)+", name) and not any(
+                    model["slug"] == name for model in catalog
+                ):
+                    async with semaphore:
+                        detail = await client.get(f"/models/{name}")
+                    if detail.status_code == 200:
+                        metric_record = parse_metric_record(detail.text, name)
+                        if metric_record:
+                            selected, method = metric_record, "exact"
+                    elif detail.status_code != 404:
+                        detail.raise_for_status()
                 if selected is None:
                     return name, {"matched": False, "query_name": name, "match_method": method}
                 slug = str(selected["slug"])
-                metric_record = selected if parse_metric_record(models_html, slug) else None
+                metric_record = metric_record or (selected if parse_metric_record(models_html, slug) else None)
                 if metric_record is None:
                     async with semaphore:
                         detail = await client.get(f"/models/{slug}")

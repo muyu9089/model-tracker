@@ -1,6 +1,7 @@
 import json
 import unittest
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from app.artificial_analysis import (
     format_thousands,
@@ -87,6 +88,20 @@ class ArtificialAnalysisTests(unittest.TestCase):
 
 
 class NewBenchmarkClientTests(unittest.IsolatedAsyncioTestCase):
+    async def test_index_slug_missing_from_catalog_uses_detail_page(self) -> None:
+        catalog = {"slug": "other-model", "name": "Other Model",
+                   "release": {"slug": "other-model"}}
+        detail = {"id": "1", "slug": "deepseek-v4-pro", "name": "DeepSeek V4 Pro 0813",
+                  "intelligenceIndex": 23}
+        html = flight_html("0:" + json.dumps(catalog, separators=(",", ":")))
+        detail_html = flight_html("0:" + json.dumps(detail, separators=(",", ":")))
+        with patch("app.artificial_analysis.httpx.AsyncClient") as client_class:
+            client = client_class.return_value.__aenter__.return_value
+            client.get = AsyncMock(return_value=SimpleNamespace(status_code=200, text=detail_html))
+            result = await ArtificialAnalysisClient().enrich_models(["deepseek-v4-pro"], html)
+        self.assertEqual(result["deepseek-v4-pro"]["intelligence_index"], 23)
+        client.get.assert_awaited_once_with("/models/deepseek-v4-pro")
+
     async def test_enrichment_preserves_elo_and_converts_percent(self) -> None:
         record = {
             "id": "1", "slug": "qwen3-8-max", "name": "Qwen3.8 Max",
