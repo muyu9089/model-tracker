@@ -1,15 +1,19 @@
 from datetime import date
 from datetime import datetime, timezone
 from html import escape
+from io import BytesIO
 import json
 from pathlib import Path
 from secrets import compare_digest
 from typing import Any, Literal
+from zoneinfo import ZoneInfo
 
 import anyio
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
+from fastapi.responses import Response
 from mcp.shared.exceptions import McpError
+from openpyxl import Workbook
 from pydantic import BaseModel, Field
 
 from .config import Settings, get_settings
@@ -180,8 +184,8 @@ def _database_page(repository: TrackerRepository, table: str) -> str:
     else:
         columns = [row["name"] for row in repository.rows(f'PRAGMA table_info("{table}")')]
         if table == "model_profiles":
-            columns.insert(0, "model_name")
-            rows = repository.rows("""SELECT m.model_name, p.* FROM model_profiles p
+            columns = ["model_name", "updated_at", *columns]
+            rows = repository.rows("""SELECT m.model_name, m.updated_at, p.* FROM model_profiles p
                                       JOIN models m ON m.id=p.model_id ORDER BY p.rowid DESC LIMIT 200""")
         else:
             rows = repository.rows(f'SELECT * FROM "{table}" ORDER BY rowid DESC LIMIT 200')
@@ -189,7 +193,7 @@ def _database_page(repository: TrackerRepository, table: str) -> str:
             "<tr>" + "".join(f"<td>{_cell(row[column])}</td>" for column in columns) + "</tr>"
             for row in rows
         )
-    header = "".join(f"<th>{escape('模型名称' if table == 'model_profiles' and column == 'model_name' else column)}</th>" for column in columns)
+    header = "".join(f"<th>{escape({'model_name': '模型名称', 'updated_at': '更新时间'}.get(column, column) if table == 'model_profiles' else column)}</th>" for column in columns)
     body = body or f'<tr><td class="empty" colspan="{len(columns)}">暂无数据</td></tr>'
     title = "模型总览" if table == "overview" else "补充记录" if table == "supplement" else DATABASE_TABLES[table]
     subtitle = "全部模型 · 可删除" if table == "overview" else "最新 200 次 · 只读" if table == "supplement" else "最新 200 行 · 只读"
@@ -205,7 +209,7 @@ td{{max-width:420px;overflow:hidden;text-overflow:ellipsis}}tr:last-child td{{bo
 .edit-value{{width:150px;max-width:100%;padding:5px}}.edit-value[type=number]{{width:90px}}[hidden]{{display:none!important}}
 .token-dialog{{border:1px solid #d0d5dd;border-radius:10px;padding:24px;box-shadow:0 12px 32px #0002}}.token-dialog form{{display:grid;gap:12px}}.token-dialog menu{{display:flex;gap:8px;justify-content:end;margin:0;padding:0}}
 </style></head><body><main><h1>模型数据库</h1><p>{title} · {subtitle}</p><nav aria-label="数据菜单">{tabs}</nav>
-{'<p><button type="button" onclick="supplementInfo()">补充缺失信息</button></p>' if table == 'overview' else ''}
+{'<div style="margin-bottom:16px"><button type="button" onclick="supplementInfo()">补充缺失信息</button> <form action="/models/export.xlsx" method="get" style="display:inline"><label>更新时间晚于（北京时间） <input type="datetime-local" name="after" required></label> <button type="submit">导出 Excel</button></form></div>' if table == 'overview' else ''}
 <section><table><thead><tr>{header}</tr></thead><tbody>{body}</tbody></table></section></main>
 <dialog id="token-dialog" class="token-dialog" aria-label="输入操作令牌"><form method="dialog">
 <label>操作令牌 <input type="password" required autocomplete="off"></label>
@@ -358,6 +362,51 @@ def database_view(
     if table not in ("overview", "supplement") and table not in DATABASE_TABLES:
         raise HTTPException(status_code=404, detail="数据表不存在")
     return HTMLResponse(_database_page(repository, table))
+
+
+@app.get("/models/export.xlsx", include_in_schema=False)
+def export_models_excel(
+    after: datetime = Query(description="更新时间下限，未指定时区按北京时间解释"),
+    repository: TrackerRepository = Depends(get_repository),
+) -> Response:
+    cutoff = (after.replace(tzinfo=ZoneInfo("Asia/Shanghai")) if after.tzinfo is None else after)
+    cutoff_utc = cutoff.astimezone(timezone.utc).isoformat()
+    model_ids = [row["id"] for row in repository.rows(
+        "SELECT id FROM models WHERE julianday(updated_at) > julianday(?) ORDER BY id", (cutoff_utc,)
+    )]
+    placeholders = ", ".join("?" for _ in model_ids) or "NULL"
+    benchmark_ids = [row["benchmark_id"] for row in repository.rows(
+        f"SELECT DISTINCT benchmark_id FROM benchmark_states WHERE model_id IN ({placeholders})", tuple(model_ids)
+    )]
+    run_ids = [row["run_id"] for row in repository.rows(
+        f"SELECT DISTINCT run_id FROM scan_run_models WHERE model_id IN ({placeholders})", tuple(model_ids)
+    )]
+    workbook = Workbook()
+    workbook.remove(workbook.active)
+    tables = (
+        ("模型", "models", f"id IN ({placeholders})", tuple(model_ids)),
+        ("模型详情", "model_profiles", f"model_id IN ({placeholders})", tuple(model_ids)),
+        ("评测状态", "benchmark_states", f"model_id IN ({placeholders})", tuple(model_ids)),
+        ("评测结果", "benchmark_results", f"model_id IN ({placeholders})", tuple(model_ids)),
+        ("AA模型映射", "aa_model_mappings", f"model_id IN ({placeholders})", tuple(model_ids)),
+        ("扫描模型", "scan_run_models", f"model_id IN ({placeholders})", tuple(model_ids)),
+        ("评测项", "benchmarks", f"id IN ({', '.join('?' for _ in benchmark_ids) or 'NULL'})", tuple(benchmark_ids)),
+        ("扫描记录", "scan_runs", f"id IN ({', '.join('?' for _ in run_ids) or 'NULL'})", tuple(run_ids)),
+    )
+    for title, table, condition, parameters in tables:
+        sheet = workbook.create_sheet(title)
+        columns = [row["name"] for row in repository.rows(f'PRAGMA table_info("{table}")')]
+        sheet.append(columns)
+        for row in repository.rows(f'SELECT * FROM "{table}" WHERE {condition}', parameters):
+            sheet.append([row[column] for column in columns])
+            for cell in sheet[sheet.max_row]:
+                if isinstance(cell.value, str):
+                    cell.data_type = "s"
+    output = BytesIO()
+    workbook.save(output)
+    filename = f"models_after_{cutoff_utc[:16].replace('-', '').replace(':', '').replace('T', '_')}.xlsx"
+    return Response(output.getvalue(), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
 @app.get("/models")
