@@ -52,6 +52,12 @@ class TrackerRepository:
                    ON CONFLICT(code) DO UPDATE SET display_name=excluded.display_name""",
                 BENCHMARKS.items(),
             )
+            connection.execute(
+                f"""INSERT OR IGNORE INTO benchmark_states(model_id, benchmark_id, status, updated_at)
+                    SELECT m.id, b.id, 'pending', ? FROM models m CROSS JOIN benchmarks b
+                    WHERE b.code IN ({', '.join('?' for _ in BENCHMARKS)})""",
+                (utc_now(), *BENCHMARKS),
+            )
 
     def integrity_check(self) -> str:
         with transaction(self.path) as connection:

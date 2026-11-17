@@ -19,6 +19,21 @@ def profile(name: str) -> dict:
 
 
 class DatabaseTests(unittest.TestCase):
+    def test_existing_models_receive_missing_benchmark_states(self) -> None:
+        from app.db.connection import transaction
+
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "tracker.db"
+            repository = TrackerRepository(path)
+            model_id, _ = repository.add_model({"name": "Muse Spark 1.3"})
+            with transaction(path) as connection:
+                connection.execute("""DELETE FROM benchmark_states WHERE model_id=? AND benchmark_id IN
+                    (SELECT id FROM benchmarks WHERE code IN ('aa-briefcase', 'automationbench-aa'))""", (model_id,))
+            repository.set_aa_mapping(model_id, "aa-briefcase", "muse-spark-1-3")
+            repaired = TrackerRepository(path)
+            self.assertEqual(repaired.pending_names("aa-briefcase"), ["Muse Spark 1.3"])
+            self.assertEqual(repaired.pending_names("automationbench-aa"), ["Muse Spark 1.3"])
+
     def test_existing_database_adds_aa_mapping_table(self) -> None:
         from app.db.connection import transaction
 
