@@ -57,7 +57,7 @@ async def enrich_with_aa_mappings(repository, aa_client, code, names, html):
         "aa-briefcase": "enrich_aa_briefcase_models",
         "automationbench-aa": "enrich_automationbench_models",
     }[code])
-    mappings = repository.aa_mappings(code)
+    mappings = repository.aa_mappings()
     queries = {name: mappings.get(name, name) for name in names}
     found = await method(list(dict.fromkeys(queries.values())), html)
     results = {}

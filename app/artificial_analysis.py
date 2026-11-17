@@ -387,9 +387,12 @@ class ArtificialAnalysisClient:
                     response = await client.get(f"/models/{name}")
                     if response.status_code != 404:
                         response.raise_for_status()
-                        detail = parse_metric_record(response.text, name)
-                        if detail and isinstance(_briefcase_elo(detail) if code == "aa-briefcase"
-                                                 else detail.get(key), (int, float)):
+                        detail = next((model for model in _decode_objects(
+                            _next_flight_text(response.text), '{"id":"')
+                            if model.get("slug") == name and isinstance(
+                                _briefcase_elo(model) if code == "aa-briefcase" else model.get(key),
+                                (int, float))), None)
+                        if detail:
                             selected, method = detail, "exact"
             if selected is None:
                 results[name] = {"matched": False, "error": f"未匹配到 {code} 模型"}

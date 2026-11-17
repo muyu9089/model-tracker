@@ -19,13 +19,13 @@ class DatabasePageTests(unittest.TestCase):
             model_id, _ = repository.add_model({"name": "Local"})
             settings = Settings(tracker_scan_token="secret")
             with self.assertRaises(Exception) as unauthorized:
-                set_aa_mapping(model_id, "aa-briefcase", AaMappingEdit(slug="aa-slug"), "bad", settings, repository)
+                set_aa_mapping(model_id, AaMappingEdit(slug="aa-slug"), "bad", settings, repository)
             self.assertEqual(unauthorized.exception.status_code, 401)
             with self.assertRaises(Exception) as invalid:
-                set_aa_mapping(model_id, "aa-briefcase", AaMappingEdit(slug="../bad"), "secret", settings, repository)
+                set_aa_mapping(model_id, AaMappingEdit(slug="../bad"), "secret", settings, repository)
             self.assertEqual(invalid.exception.status_code, 422)
-            self.assertEqual(set_aa_mapping(model_id, "aa-briefcase", AaMappingEdit(slug="aa-slug"), "secret", settings, repository), {"updated": True})
-            self.assertEqual(repository.aa_mappings("aa-briefcase"), {"Local": "aa-slug"})
+            self.assertEqual(set_aa_mapping(model_id, AaMappingEdit(slug="aa-slug"), "secret", settings, repository), {"updated": True})
+            self.assertEqual(repository.aa_mappings(), {"Local": "aa-slug"})
 
     def test_overview_edit_updates_atomically_and_preserves_other_fields(self) -> None:
         with TemporaryDirectory() as directory:

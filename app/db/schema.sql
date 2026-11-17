@@ -70,10 +70,8 @@ CREATE TABLE benchmark_results (
 );
 
 CREATE TABLE aa_model_mappings (
-    model_id INTEGER NOT NULL REFERENCES models(id) ON DELETE CASCADE,
-    benchmark_id INTEGER NOT NULL REFERENCES benchmarks(id),
-    slug TEXT NOT NULL,
-    PRIMARY KEY (model_id, benchmark_id)
+    model_id INTEGER PRIMARY KEY REFERENCES models(id) ON DELETE CASCADE,
+    slug TEXT NOT NULL
 );
 
 CREATE TABLE source_versions (

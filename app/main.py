@@ -288,13 +288,11 @@ async function runScan(button) {{
   finally {{ button.disabled = false; }}
 }}
 async function setAaMapping(button) {{
-  const code = prompt('评测项代码：intelligence_index、terminalbench-4-0、aa-briefcase、automationbench-aa');
-  if (!code) return;
   const slug = prompt('AA 页面中的模型 slug');
   if (!slug) return;
   const token = await operationToken();
   if (!token) return;
-  const response = await fetch(`/models/${{button.dataset.id}}/aa-mappings/${{encodeURIComponent(code)}}`,
+  const response = await fetch(`/models/${{button.dataset.id}}/aa-mapping`,
     {{method: 'PUT', headers: {{'X-Scan-Token': token, 'Content-Type': 'application/json'}}, body: JSON.stringify({{slug}})}});
   clearInvalidToken(response);
   if (!response.ok) {{ alert((await response.json()).detail || '保存失败'); return; }}
@@ -457,9 +455,9 @@ def edit_model(
     return {"updated": True}
 
 
-@app.put("/models/{model_id}/aa-mappings/{benchmark_code}")
+@app.put("/models/{model_id}/aa-mapping")
 def set_aa_mapping(
-    model_id: int, benchmark_code: str, mapping: AaMappingEdit,
+    model_id: int, mapping: AaMappingEdit,
     x_scan_token: str = Header(default=""),
     settings: Settings = Depends(get_settings),
     repository: TrackerRepository = Depends(get_repository),
@@ -469,7 +467,7 @@ def set_aa_mapping(
     if not compare_digest(x_scan_token.encode(), settings.tracker_scan_token.encode()):
         raise HTTPException(status_code=401, detail="无效的扫描令牌")
     try:
-        updated = repository.set_aa_mapping(model_id, benchmark_code, mapping.slug.strip())
+        updated = repository.set_aa_mapping(model_id, mapping.slug.strip())
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if not updated:

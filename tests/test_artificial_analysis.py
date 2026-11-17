@@ -92,7 +92,7 @@ class NewBenchmarkClientTests(unittest.IsolatedAsyncioTestCase):
         other = {"id": "1", "slug": "other-model", "name": "Other Model",
                  "briefcaseElo": 1000, "automationBenchPartialScore": 0.1}
         muse = {"id": "2", "slug": "muse-spark-1-3", "name": "Muse Spark 1.3 (max)",
-                "intelligenceIndex": 37, "briefcaseBreakdown": {"overall": {"elo": 1673.56}},
+                "intelligenceIndex": None, "briefcaseBreakdown": {"overall": {"elo": 1673.56}},
                 "automationBenchPartialScore": 0.579}
         html = flight_html("0:" + json.dumps(other, separators=(",", ":")))
         filtered_html = flight_html("0:" + json.dumps(muse, separators=(",", ":")))

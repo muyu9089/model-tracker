@@ -19,6 +19,28 @@ def profile(name: str) -> dict:
 
 
 class DatabaseTests(unittest.TestCase):
+    def test_old_benchmark_mappings_become_one_model_mapping(self) -> None:
+        from app.db.connection import transaction
+
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "tracker.db"
+            repository = TrackerRepository(path)
+            model_id, _ = repository.add_model({"name": "Local"})
+            with transaction(path) as connection:
+                connection.execute("DROP TABLE aa_model_mappings")
+                connection.execute("""CREATE TABLE aa_model_mappings (
+                    model_id INTEGER NOT NULL, benchmark_id INTEGER NOT NULL, slug TEXT NOT NULL,
+                    PRIMARY KEY (model_id, benchmark_id))""")
+                connection.execute("""INSERT INTO aa_model_mappings VALUES
+                    (?, (SELECT id FROM benchmarks WHERE code='aa-briefcase'), 'first-slug'),
+                    (?, (SELECT id FROM benchmarks WHERE code='automationbench-aa'), 'second-slug')""",
+                    (model_id, model_id))
+                connection.execute("PRAGMA user_version = 3")
+            upgraded = TrackerRepository(path)
+            self.assertEqual(upgraded.aa_mappings(), {"Local": "first-slug"})
+            self.assertEqual(upgraded.rows("SELECT COUNT(*) AS count FROM aa_model_mappings")[0]["count"], 1)
+            self.assertEqual(upgraded.pending_names("automationbench-aa"), ["Local"])
+
     def test_existing_models_receive_missing_benchmark_states(self) -> None:
         from app.db.connection import transaction
 
@@ -29,7 +51,7 @@ class DatabaseTests(unittest.TestCase):
             with transaction(path) as connection:
                 connection.execute("""DELETE FROM benchmark_states WHERE model_id=? AND benchmark_id IN
                     (SELECT id FROM benchmarks WHERE code IN ('aa-briefcase', 'automationbench-aa'))""", (model_id,))
-            repository.set_aa_mapping(model_id, "aa-briefcase", "muse-spark-1-3")
+            repository.set_aa_mapping(model_id, "muse-spark-1-3")
             repaired = TrackerRepository(path)
             self.assertEqual(repaired.pending_names("aa-briefcase"), ["Muse Spark 1.3"])
             self.assertEqual(repaired.pending_names("automationbench-aa"), ["Muse Spark 1.3"])
@@ -53,8 +75,8 @@ class DatabaseTests(unittest.TestCase):
                 connection.execute("ALTER TABLE models DROP COLUMN model_info_updated_at")
                 connection.execute("PRAGMA user_version = 1")
             upgraded = TrackerRepository(path)
-            self.assertTrue(upgraded.set_aa_mapping(model_id, "aa-briefcase", "existing-slug"))
-            self.assertEqual(upgraded.aa_mappings("aa-briefcase"), {"Existing": "existing-slug"})
+            self.assertTrue(upgraded.set_aa_mapping(model_id, "existing-slug"))
+            self.assertEqual(upgraded.aa_mappings(), {"Existing": "existing-slug"})
             self.assertEqual(upgraded.rows(
                 "SELECT model_info_updated_at FROM models WHERE id=?", (model_id,)
             )[0]["model_info_updated_at"], collected_at)
@@ -65,7 +87,7 @@ class DatabaseTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             repository = TrackerRepository(Path(directory) / "tracker.db")
             model_id, _ = repository.add_model({"name": "Local Name"})
-            self.assertTrue(repository.set_aa_mapping(model_id, "aa-briefcase", "aa-slug"))
+            self.assertTrue(repository.set_aa_mapping(model_id, "aa-slug"))
             client = SimpleNamespace(enrich_aa_briefcase_models=AsyncMock(return_value={
                 "aa-slug": {"matched": True, "slug": "aa-slug", "aa_briefcase_score": 123}
             }))
@@ -101,7 +123,7 @@ class DatabaseTests(unittest.TestCase):
                     "SELECT COUNT(*) FROM benchmark_states WHERE model_id=?", (first_id,)
                 ).fetchone()[0]
 
-        self.assertEqual(version, 3)
+        self.assertEqual(version, 4)
         self.assertEqual(display_name, "AA-Briefcase v1.1")
         self.assertTrue(created)
         self.assertFalse(duplicate)
