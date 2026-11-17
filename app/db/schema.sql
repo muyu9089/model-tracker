@@ -9,7 +9,8 @@ CREATE TABLE models (
     aihot_url TEXT,
     aihot_id TEXT,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    model_info_updated_at TEXT
 );
 
 CREATE TABLE model_profiles (

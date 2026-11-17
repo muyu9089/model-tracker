@@ -163,8 +163,9 @@ class TrackerRepository:
                 raise ValueError("模型名称已存在")
             now = utc_now()
             connection.execute(
-                "UPDATE models SET model_name=?, normalized_name=?, updated_at=? WHERE id=?",
-                (name, normalized, now, model_id),
+                """UPDATE models SET model_name=?, normalized_name=?, updated_at=?,
+                   model_info_updated_at=? WHERE id=?""",
+                (name, normalized, now, now, model_id),
             )
             connection.execute(
                 """INSERT INTO model_profiles(model_id, vendor_or_organization,
@@ -212,11 +213,16 @@ class TrackerRepository:
             columns = ", ".join(PROFILE_FIELDS)
             placeholders = ", ".join("?" for _ in PROFILE_FIELDS)
             updates = ", ".join(f"{field}=excluded.{field}" for field in PROFILE_FIELDS)
+            now = utc_now()
             connection.execute(
                 f"""INSERT INTO model_profiles(model_id, {columns}, collected_at)
                     VALUES (?, {placeholders}, ?)
                     ON CONFLICT(model_id) DO UPDATE SET {updates}, collected_at=excluded.collected_at""",
-                (int(row["id"]), *(profile.get(field) for field in PROFILE_FIELDS), utc_now()),
+                (int(row["id"]), *(profile.get(field) for field in PROFILE_FIELDS), now),
+            )
+            connection.execute(
+                "UPDATE models SET model_info_updated_at=? WHERE id=?",
+                (now, int(row["id"])),
             )
 
     def pending_names(self, benchmark_code: str) -> list[str]:

@@ -26,12 +26,23 @@ class DatabaseTests(unittest.TestCase):
             path = Path(directory) / "tracker.db"
             repository = TrackerRepository(path)
             model_id, _ = repository.add_model({"name": "Existing"})
+            repository.upsert_profile({"model_name": "Existing"})
+            collected_at = repository.rows(
+                "SELECT collected_at FROM model_profiles WHERE model_id=?", (model_id,)
+            )[0]["collected_at"]
+            self.assertEqual(repository.rows(
+                "SELECT model_info_updated_at FROM models WHERE id=?", (model_id,)
+            )[0]["model_info_updated_at"], collected_at)
             with transaction(path) as connection:
                 connection.execute("DROP TABLE aa_model_mappings")
+                connection.execute("ALTER TABLE models DROP COLUMN model_info_updated_at")
                 connection.execute("PRAGMA user_version = 1")
             upgraded = TrackerRepository(path)
             self.assertTrue(upgraded.set_aa_mapping(model_id, "aa-briefcase", "existing-slug"))
             self.assertEqual(upgraded.aa_mappings("aa-briefcase"), {"Existing": "existing-slug"})
+            self.assertEqual(upgraded.rows(
+                "SELECT model_info_updated_at FROM models WHERE id=?", (model_id,)
+            )[0]["model_info_updated_at"], collected_at)
 
     def test_aa_mapping_uses_slug_and_rejects_wrong_match(self) -> None:
         from unittest.mock import AsyncMock
@@ -75,7 +86,7 @@ class DatabaseTests(unittest.TestCase):
                     "SELECT COUNT(*) FROM benchmark_states WHERE model_id=?", (first_id,)
                 ).fetchone()[0]
 
-        self.assertEqual(version, 2)
+        self.assertEqual(version, 3)
         self.assertEqual(display_name, "AA-Briefcase v1.1")
         self.assertTrue(created)
         self.assertFalse(duplicate)
