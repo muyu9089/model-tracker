@@ -203,10 +203,36 @@ nav a.active{{background:#155eef;color:white;border-color:#155eef}}small{{opacit
 table{{width:100%;border-collapse:collapse;white-space:nowrap}}th,td{{padding:11px 14px;border-bottom:1px solid #eaecf0;text-align:left;vertical-align:top}}th{{position:sticky;top:0;background:#f9fafb;color:#475467;font-size:12px}}
 td{{max-width:420px;overflow:hidden;text-overflow:ellipsis}}tr:last-child td{{border-bottom:0}}tr:hover td{{background:#f9fafb}}details{{white-space:normal}}summary{{cursor:pointer}}pre{{max-width:800px;white-space:pre-wrap;word-break:break-word}}.empty{{padding:40px;text-align:center;color:#98a2b3}}
 .edit-value{{width:150px;max-width:100%;padding:5px}}.edit-value[type=number]{{width:90px}}[hidden]{{display:none!important}}
+.token-dialog{{border:1px solid #d0d5dd;border-radius:10px;padding:24px;box-shadow:0 12px 32px #0002}}.token-dialog form{{display:grid;gap:12px}}.token-dialog menu{{display:flex;gap:8px;justify-content:end;margin:0;padding:0}}
 </style></head><body><main><h1>模型数据库</h1><p>{title} · {subtitle}</p><nav aria-label="数据菜单">{tabs}</nav>
-{'<p><label>操作令牌 <input id="delete-token" type="password" autocomplete="off"></label> <button type="button" onclick="supplementInfo()">补充缺失信息</button></p>' if table == 'overview' else ''}
+{'<p><button type="button" onclick="supplementInfo()">补充缺失信息</button></p>' if table == 'overview' else ''}
 <section><table><thead><tr>{header}</tr></thead><tbody>{body}</tbody></table></section></main>
+<dialog id="token-dialog" class="token-dialog" aria-label="输入操作令牌"><form method="dialog">
+<label>操作令牌 <input type="password" required autocomplete="off"></label>
+<small>输入后在当前标签页内保留 10 分钟</small>
+<menu><button value="cancel" formnovalidate>取消</button><button value="confirm">确定</button></menu>
+</form></dialog>
 <script>
+async function operationToken() {{
+  let saved;
+  try {{ saved = JSON.parse(sessionStorage.getItem('operation-token') || 'null'); }} catch {{ saved = null; }}
+  if (saved && Date.now() < saved.expiresAt) return saved.value;
+  sessionStorage.removeItem('operation-token');
+  const dialog = document.getElementById('token-dialog');
+  const input = dialog.querySelector('input');
+  input.value = '';
+  dialog.returnValue = '';
+  dialog.showModal();
+  const value = await new Promise(resolve => dialog.addEventListener('close', () =>
+    resolve(dialog.returnValue === 'confirm' ? input.value : null), {{once: true}}));
+  input.value = '';
+  if (!value) return null;
+  sessionStorage.setItem('operation-token', JSON.stringify({{value, expiresAt: Date.now() + 10 * 60 * 1000}}));
+  return value;
+}}
+function clearInvalidToken(response) {{
+  if (response.status === 401) sessionStorage.removeItem('operation-token');
+}}
 async function editModel(button) {{
   const row = button.closest('tr');
   if (button.textContent === '编辑') {{
@@ -217,8 +243,8 @@ async function editModel(button) {{
     button.after(cancel);
     return;
   }}
-  const token = document.getElementById('delete-token').value;
-  if (!token) {{ alert('请输入操作令牌'); return; }}
+  const token = await operationToken();
+  if (!token) return;
   if ([...row.querySelectorAll('[data-score]')].some(input => !input.validity.valid)) {{ alert('请输入有效的评测分数'); return; }}
   const data = {{scores: {{}}}};
   row.querySelectorAll('[data-field]').forEach(input => data[input.dataset.field] = input.value.trim() || null);
@@ -226,38 +252,42 @@ async function editModel(button) {{
   if (!data.model_name) {{ alert('模型名称不能为空'); return; }}
   try {{
     const response = await fetch(`/models/${{button.dataset.id}}`, {{method: 'PUT', headers: {{'X-Scan-Token': token, 'Content-Type': 'application/json'}}, body: JSON.stringify(data)}});
+    clearInvalidToken(response);
     if (!response.ok) {{ const error = await response.json(); alert(typeof error.detail === 'string' ? error.detail : '保存失败，请检查输入'); return; }}
     location.reload();
   }} catch {{ alert('保存失败，请检查网络连接'); }}
 }}
 async function supplementInfo() {{
-  const token = document.getElementById('delete-token').value;
-  if (!token) {{ alert('请输入操作令牌'); return; }}
   if (!confirm('开始补充缺失的模型信息和评测指标？')) return;
+  const token = await operationToken();
+  if (!token) return;
   try {{
     const response = await fetch('/models/supplement', {{method: 'POST', headers: {{'X-Scan-Token': token}}}});
+    clearInvalidToken(response);
     if (!response.ok) {{ alert((await response.json()).detail || '补充失败'); return; }}
     location.href = '/?table=supplement';
   }} catch {{ alert('补充失败，请检查网络连接'); }}
 }}
 async function setAaMapping(button) {{
-  const token = document.getElementById('delete-token').value;
-  if (!token) {{ alert('请输入操作令牌'); return; }}
   const code = prompt('评测项代码：intelligence_index、terminalbench-4-0、aa-briefcase、automationbench-aa');
   if (!code) return;
   const slug = prompt('AA 页面中的模型 slug');
   if (!slug) return;
+  const token = await operationToken();
+  if (!token) return;
   const response = await fetch(`/models/${{button.dataset.id}}/aa-mappings/${{encodeURIComponent(code)}}`,
     {{method: 'PUT', headers: {{'X-Scan-Token': token, 'Content-Type': 'application/json'}}, body: JSON.stringify({{slug}})}});
+  clearInvalidToken(response);
   if (!response.ok) {{ alert((await response.json()).detail || '保存失败'); return; }}
   location.reload();
 }}
 async function deleteModel(button) {{
-  const token = document.getElementById('delete-token').value;
-  if (!token) {{ alert('请输入删除令牌'); return; }}
   if (!confirm(`确定删除模型“${{button.dataset.name}}”及其全部关联记录吗？`)) return;
+  const token = await operationToken();
+  if (!token) return;
   try {{
     const response = await fetch(`/models/${{button.dataset.id}}`, {{method: 'DELETE', headers: {{'X-Scan-Token': token}}}});
+    clearInvalidToken(response);
     if (!response.ok) {{ alert((await response.json()).detail || '删除失败'); return; }}
     location.reload();
   }} catch {{ alert('删除失败，请检查网络连接'); }}
