@@ -3,7 +3,7 @@ from pathlib import Path
 from .connection import transaction
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def migrate(path: Path) -> None:
@@ -14,4 +14,12 @@ def migrate(path: Path) -> None:
         if version == 0:
             schema = Path(__file__).with_name("schema.sql").read_text(encoding="utf-8")
             connection.executescript(schema)
+            connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        elif version == 1:
+            connection.execute("""CREATE TABLE aa_model_mappings (
+                model_id INTEGER NOT NULL REFERENCES models(id) ON DELETE CASCADE,
+                benchmark_id INTEGER NOT NULL REFERENCES benchmarks(id),
+                slug TEXT NOT NULL,
+                PRIMARY KEY (model_id, benchmark_id)
+            )""")
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")

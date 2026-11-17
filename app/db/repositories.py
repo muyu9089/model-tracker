@@ -106,6 +106,35 @@ class TrackerRepository:
                 "SELECT model_name FROM models ORDER BY id"
             )]
 
+    def aa_mappings(self, benchmark_code: str) -> dict[str, str]:
+        with transaction(self.path) as connection:
+            return {str(row[0]): str(row[1]) for row in connection.execute(
+                """SELECT m.model_name, a.slug FROM aa_model_mappings a
+                   JOIN models m ON m.id=a.model_id
+                   JOIN benchmarks b ON b.id=a.benchmark_id WHERE b.code=?""",
+                (benchmark_code,),
+            )}
+
+    def set_aa_mapping(self, model_id: int, benchmark_code: str, slug: str) -> bool:
+        if benchmark_code not in BENCHMARKS or not slug or not all(
+            character.isascii() and (character.isalnum() or character in "-_.") for character in slug
+        ):
+            raise ValueError("无效的评测项或 AA slug")
+        with transaction(self.path) as connection:
+            model = connection.execute("SELECT 1 FROM models WHERE id=?", (model_id,)).fetchone()
+            if not model:
+                return False
+            connection.execute("""INSERT INTO aa_model_mappings(model_id, benchmark_id, slug)
+                VALUES (?, (SELECT id FROM benchmarks WHERE code=?), ?)
+                ON CONFLICT(model_id, benchmark_id) DO UPDATE SET slug=excluded.slug""",
+                (model_id, benchmark_code, slug),
+            )
+            connection.execute("""UPDATE benchmark_states SET status='pending', updated_at=?
+                WHERE model_id=? AND benchmark_id=(SELECT id FROM benchmarks WHERE code=?)""",
+                (utc_now(), model_id, benchmark_code),
+            )
+        return True
+
     def delete_model(self, model_id: int) -> bool:
         with transaction(self.path) as connection:
             return connection.execute("DELETE FROM models WHERE id = ?", (model_id,)).rowcount > 0

@@ -68,6 +68,13 @@ CREATE TABLE benchmark_results (
     PRIMARY KEY (model_id, benchmark_id)
 );
 
+CREATE TABLE aa_model_mappings (
+    model_id INTEGER NOT NULL REFERENCES models(id) ON DELETE CASCADE,
+    benchmark_id INTEGER NOT NULL REFERENCES benchmarks(id),
+    slug TEXT NOT NULL,
+    PRIMARY KEY (model_id, benchmark_id)
+);
+
 CREATE TABLE source_versions (
     id INTEGER PRIMARY KEY,
     source_code TEXT NOT NULL,

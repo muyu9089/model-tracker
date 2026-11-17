@@ -8,11 +8,25 @@ from fastapi.testclient import TestClient
 
 from app.config import Settings, get_settings
 from app.db import TrackerRepository
-from app.main import OverviewEdit, _database_page, app, edit_model, supplement_models
+from app.main import AaMappingEdit, OverviewEdit, _database_page, app, edit_model, set_aa_mapping, supplement_models
 from app.qwen_agent import ModelInfo
 
 
 class DatabasePageTests(unittest.TestCase):
+    def test_aa_mapping_requires_token_and_valid_slug(self) -> None:
+        with TemporaryDirectory() as directory:
+            repository = TrackerRepository(Path(directory) / "tracker.db")
+            model_id, _ = repository.add_model({"name": "Local"})
+            settings = Settings(tracker_scan_token="secret")
+            with self.assertRaises(Exception) as unauthorized:
+                set_aa_mapping(model_id, "aa-briefcase", AaMappingEdit(slug="aa-slug"), "bad", settings, repository)
+            self.assertEqual(unauthorized.exception.status_code, 401)
+            with self.assertRaises(Exception) as invalid:
+                set_aa_mapping(model_id, "aa-briefcase", AaMappingEdit(slug="../bad"), "secret", settings, repository)
+            self.assertEqual(invalid.exception.status_code, 422)
+            self.assertEqual(set_aa_mapping(model_id, "aa-briefcase", AaMappingEdit(slug="aa-slug"), "secret", settings, repository), {"updated": True})
+            self.assertEqual(repository.aa_mappings("aa-briefcase"), {"Local": "aa-slug"})
+
     def test_overview_edit_updates_atomically_and_preserves_other_fields(self) -> None:
         with TemporaryDirectory() as directory:
             repository = TrackerRepository(Path(directory) / "tracker.db")

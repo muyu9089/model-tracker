@@ -25,6 +25,7 @@ DATABASE_TABLES = {
     "benchmarks": "评测项",
     "benchmark_states": "评测状态",
     "benchmark_results": "评测结果",
+    "aa_model_mappings": "AA 模型映射",
     "scan_runs": "扫描记录",
     "scan_run_models": "扫描模型",
     "source_versions": "数据源版本",
@@ -61,6 +62,10 @@ class OverviewEdit(BaseModel):
     open_source_attribute: str | None
     region: str | None
     scores: dict[str, float | None]
+
+
+class AaMappingEdit(BaseModel):
+    slug: str
 
 
 def get_client(settings: Settings = Depends(get_settings)) -> AIHotMCPClient:
@@ -154,6 +159,7 @@ def _database_page(repository: TrackerRepository, table: str) -> str:
                     editable(model["vendor_or_organization"], "vendor_or_organization"),
                     editable(model["open_source_attribute"], "open_source_attribute"), editable(model["region"], "region"),
                     f'<button type="button" data-id="{model["id"]}" onclick="editModel(this)">编辑</button> '
+                    f'<button type="button" data-id="{model["id"]}" onclick="setAaMapping(this)">AA 映射</button> '
                     f'<button type="button" data-id="{model["id"]}" data-name="{escape(model["model_name"], quote=True)}" onclick="deleteModel(this)">删除</button>',
                 )
             ) + "</tr>")
@@ -233,6 +239,18 @@ async function supplementInfo() {{
     if (!response.ok) {{ alert((await response.json()).detail || '补充失败'); return; }}
     location.href = '/?table=supplement';
   }} catch {{ alert('补充失败，请检查网络连接'); }}
+}}
+async function setAaMapping(button) {{
+  const token = document.getElementById('delete-token').value;
+  if (!token) {{ alert('请输入操作令牌'); return; }}
+  const code = prompt('评测项代码：intelligence_index、terminalbench-4-0、aa-briefcase、automationbench-aa');
+  if (!code) return;
+  const slug = prompt('AA 页面中的模型 slug');
+  if (!slug) return;
+  const response = await fetch(`/models/${{button.dataset.id}}/aa-mappings/${{encodeURIComponent(code)}}`,
+    {{method: 'PUT', headers: {{'X-Scan-Token': token, 'Content-Type': 'application/json'}}, body: JSON.stringify({{slug}})}});
+  if (!response.ok) {{ alert((await response.json()).detail || '保存失败'); return; }}
+  location.reload();
 }}
 async function deleteModel(button) {{
   const token = document.getElementById('delete-token').value;
@@ -345,6 +363,26 @@ def edit_model(
     return {"updated": True}
 
 
+@app.put("/models/{model_id}/aa-mappings/{benchmark_code}")
+def set_aa_mapping(
+    model_id: int, benchmark_code: str, mapping: AaMappingEdit,
+    x_scan_token: str = Header(default=""),
+    settings: Settings = Depends(get_settings),
+    repository: TrackerRepository = Depends(get_repository),
+) -> dict[str, bool]:
+    if not settings.tracker_scan_token:
+        raise HTTPException(status_code=503, detail="未配置 TRACKER_SCAN_TOKEN")
+    if not compare_digest(x_scan_token.encode(), settings.tracker_scan_token.encode()):
+        raise HTTPException(status_code=401, detail="无效的扫描令牌")
+    try:
+        updated = repository.set_aa_mapping(model_id, benchmark_code, mapping.slug.strip())
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not updated:
+        raise HTTPException(status_code=404, detail="模型不存在")
+    return {"updated": True}
+
+
 @app.delete("/models/{model_id}")
 def delete_model(
     model_id: int,
@@ -372,7 +410,7 @@ async def supplement_models(
     if not compare_digest(x_scan_token.encode(), settings.tracker_scan_token.encode()):
         raise HTTPException(status_code=401, detail="无效的扫描令牌")
     from .artificial_analysis import ArtificialAnalysisClient
-    from .model_tracker import SCAN_LOCK
+    from .model_tracker import SCAN_LOCK, enrich_with_aa_mappings
     from .qwen_agent import ModelInfo, QwenAgent
 
     if SCAN_LOCK.locked():
@@ -405,23 +443,23 @@ async def supplement_models(
                 errors.append(f"{name}：{type(exc).__name__}：{exc}")
 
         benchmark_fields = {
-            "intelligence_index": ("fetch_models_html", "enrich_models", "intelligence_index"),
-            "terminalbench-4-0": ("fetch_terminalbench_html", "enrich_terminalbench_models", "terminalbench_4_0_score"),
-            "aa-briefcase": ("fetch_aa_briefcase_html", "enrich_aa_briefcase_models", "aa_briefcase_score"),
-            "automationbench-aa": ("fetch_automationbench_html", "enrich_automationbench_models", "automationbench_aa_score"),
+            "intelligence_index": ("fetch_models_html", "intelligence_index"),
+            "terminalbench-4-0": ("fetch_terminalbench_html", "terminalbench_4_0_score"),
+            "aa-briefcase": ("fetch_aa_briefcase_html", "aa_briefcase_score"),
+            "automationbench-aa": ("fetch_automationbench_html", "automationbench_aa_score"),
         }
         if settings.artificial_analysis_enabled:
             aa_client = ArtificialAnalysisClient(
                 base_url=settings.artificial_analysis_base_url,
                 timeout_seconds=settings.artificial_analysis_timeout_seconds,
             )
-            for code, (fetch, enrich, score_field) in benchmark_fields.items():
+            for code, (fetch, score_field) in benchmark_fields.items():
                 names = repository.pending_names(code)
                 if not names:
                     continue
                 try:
                     html = await getattr(aa_client, fetch)()
-                    metrics = await getattr(aa_client, enrich)(names, html)
+                    metrics = await enrich_with_aa_mappings(repository, aa_client, code, names, html)
                     repository.save_benchmark_metrics(code, names, metrics)
                     completed = [name for name in names if metrics.get(name, {}).get(score_field) is not None]
                     messages.append(f"{code}：补充 {len(completed)}/{len(names)} 项")

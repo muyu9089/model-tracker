@@ -50,6 +50,27 @@ async def collect_model_info(
     return profiles
 
 
+async def enrich_with_aa_mappings(repository, aa_client, code, names, html):
+    method = getattr(aa_client, {
+        "intelligence_index": "enrich_models",
+        "terminalbench-4-0": "enrich_terminalbench_models",
+        "aa-briefcase": "enrich_aa_briefcase_models",
+        "automationbench-aa": "enrich_automationbench_models",
+    }[code])
+    mappings = repository.aa_mappings(code)
+    queries = {name: mappings.get(name, name) for name in names}
+    found = await method(list(dict.fromkeys(queries.values())), html)
+    results = {}
+    for name, query in queries.items():
+        metric = found.get(query, {"matched": False})
+        if name in mappings:
+            metric = ({**metric, "query_name": name, "match_method": "manual"}
+                      if metric.get("slug") == query and metric.get("matched")
+                      else {"matched": False, "error": f"AA 映射 slug 未找到：{query}"})
+        results[name] = metric
+    return results
+
+
 async def update_intelligence_index(
     repository: TrackerRepository,
     aa_client: ArtificialAnalysisClient,
@@ -62,7 +83,7 @@ async def update_intelligence_index(
         names = repository.pending_names("intelligence_index")
         if not names:
             return {}
-        metrics = await aa_client.enrich_models(names, html)
+        metrics = await enrich_with_aa_mappings(repository, aa_client, "intelligence_index", names, html)
         repository.save_benchmark_metrics("intelligence_index", names, metrics)
         return metrics
     except Exception as exc:
@@ -81,15 +102,13 @@ async def update_benchmark(
     try:
         if code == "terminalbench-4-0":
             html = await aa_client.fetch_terminalbench_html()
-            metrics = await aa_client.enrich_terminalbench_models(names, html)
         elif code == "aa-briefcase":
             html = await aa_client.fetch_aa_briefcase_html()
-            metrics = await aa_client.enrich_aa_briefcase_models(names, html)
         elif code == "automationbench-aa":
             html = await aa_client.fetch_automationbench_html()
-            metrics = await aa_client.enrich_automationbench_models(names, html)
         else:
             raise ValueError(f"未知 benchmark：{code}")
+        metrics = await enrich_with_aa_mappings(repository, aa_client, code, names, html)
         repository.save_benchmark_metrics(code, names, metrics)
         return metrics
     except Exception as exc:

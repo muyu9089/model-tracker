@@ -8,7 +8,7 @@ from unittest.mock import patch
 from app.db import TrackerRepository
 from app.exporters import JsonExporter
 from app.migration.import_legacy import import_legacy
-from app.model_tracker import run_daemon, scan_once
+from app.model_tracker import enrich_with_aa_mappings, run_daemon, scan_once
 from app.qwen_agent import ModelInfo
 
 
@@ -19,6 +19,43 @@ def profile(name: str) -> dict:
 
 
 class DatabaseTests(unittest.TestCase):
+    def test_existing_database_adds_aa_mapping_table(self) -> None:
+        from app.db.connection import transaction
+
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "tracker.db"
+            repository = TrackerRepository(path)
+            model_id, _ = repository.add_model({"name": "Existing"})
+            with transaction(path) as connection:
+                connection.execute("DROP TABLE aa_model_mappings")
+                connection.execute("PRAGMA user_version = 1")
+            upgraded = TrackerRepository(path)
+            self.assertTrue(upgraded.set_aa_mapping(model_id, "aa-briefcase", "existing-slug"))
+            self.assertEqual(upgraded.aa_mappings("aa-briefcase"), {"Existing": "existing-slug"})
+
+    def test_aa_mapping_uses_slug_and_rejects_wrong_match(self) -> None:
+        from unittest.mock import AsyncMock
+
+        with TemporaryDirectory() as directory:
+            repository = TrackerRepository(Path(directory) / "tracker.db")
+            model_id, _ = repository.add_model({"name": "Local Name"})
+            self.assertTrue(repository.set_aa_mapping(model_id, "aa-briefcase", "aa-slug"))
+            client = SimpleNamespace(enrich_aa_briefcase_models=AsyncMock(return_value={
+                "aa-slug": {"matched": True, "slug": "aa-slug", "aa_briefcase_score": 123}
+            }))
+            with self.assertRaises(StopIteration) as completed:
+                enrich_with_aa_mappings(repository, client, "aa-briefcase", ["Local Name"], "html").send(None)
+            result = completed.exception.value
+            client.enrich_aa_briefcase_models.assert_awaited_once_with(["aa-slug"], "html")
+            self.assertEqual(result["Local Name"]["aa_briefcase_score"], 123)
+            client.enrich_aa_briefcase_models.return_value = {
+                "aa-slug": {"matched": True, "slug": "similar-but-wrong", "aa_briefcase_score": 999}
+            }
+            with self.assertRaises(StopIteration) as completed:
+                enrich_with_aa_mappings(repository, client, "aa-briefcase", ["Local Name"], "html").send(None)
+            result = completed.exception.value
+            self.assertFalse(result["Local Name"]["matched"])
+
     def test_initialization_is_idempotent_and_new_model_is_atomic(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "tracker.db"
@@ -38,7 +75,7 @@ class DatabaseTests(unittest.TestCase):
                     "SELECT COUNT(*) FROM benchmark_states WHERE model_id=?", (first_id,)
                 ).fetchone()[0]
 
-        self.assertEqual(version, 1)
+        self.assertEqual(version, 2)
         self.assertEqual(display_name, "AA-Briefcase v1.1")
         self.assertTrue(created)
         self.assertFalse(duplicate)
