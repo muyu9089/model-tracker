@@ -371,6 +371,17 @@ class ArtificialAnalysisClient:
                 )
             }]
             selected, method = select_model(name, exact_models)
+            if selected is None and re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)+", name):
+                async with httpx.AsyncClient(
+                    base_url=self.base_url.rstrip("/"), timeout=self.timeout_seconds,
+                    follow_redirects=True,
+                    headers={"User-Agent": "Mozilla/5.0 (compatible; AIHotModelTracker/1.1)"},
+                ) as client:
+                    response = await client.get(f"/evaluations/{code}", params={"models": name})
+                    response.raise_for_status()
+                filtered = (parse_aa_briefcase_catalog(response.text) if code == "aa-briefcase"
+                            else parse_automationbench_catalog(response.text))
+                selected, method = select_model(name, [model for model in filtered if model["slug"] == name])
             if selected is None:
                 results[name] = {"matched": False, "error": f"未匹配到 {code} 模型"}
                 continue
