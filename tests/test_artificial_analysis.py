@@ -88,23 +88,25 @@ class ArtificialAnalysisTests(unittest.TestCase):
 
 
 class NewBenchmarkClientTests(unittest.IsolatedAsyncioTestCase):
-    async def test_mapped_score_slug_uses_filtered_evaluation_page(self) -> None:
+    async def test_mapped_score_slug_uses_model_detail_page(self) -> None:
         other = {"id": "1", "slug": "other-model", "name": "Other Model",
                  "briefcaseElo": 1000, "automationBenchPartialScore": 0.1}
         muse = {"id": "2", "slug": "muse-spark-1-3", "name": "Muse Spark 1.3 (max)",
-                "briefcaseElo": 1481, "automationBenchPartialScore": 0.579}
+                "intelligenceIndex": 37, "briefcaseBreakdown": {"overall": {"elo": 1673.56}},
+                "automationBenchPartialScore": 0.579}
         html = flight_html("0:" + json.dumps(other, separators=(",", ":")))
         filtered_html = flight_html("0:" + json.dumps(muse, separators=(",", ":")))
         with patch("app.artificial_analysis.httpx.AsyncClient") as client_class:
             client = client_class.return_value.__aenter__.return_value
             client.get = AsyncMock(return_value=SimpleNamespace(
-                text=filtered_html, raise_for_status=lambda: None))
+                status_code=200, text=filtered_html, raise_for_status=lambda: None))
             aa = ArtificialAnalysisClient()
             briefcase = await aa.enrich_aa_briefcase_models(["muse-spark-1-3"], html)
             automation = await aa.enrich_automationbench_models(["muse-spark-1-3"], html)
-        self.assertEqual(briefcase["muse-spark-1-3"]["aa_briefcase_score"], 1481)
+        self.assertEqual(briefcase["muse-spark-1-3"]["aa_briefcase_score"], 1674)
         self.assertEqual(automation["muse-spark-1-3"]["automationbench_aa_score"], 57.9)
         self.assertEqual(client.get.await_count, 2)
+        client.get.assert_awaited_with("/models/muse-spark-1-3")
 
     async def test_index_slug_missing_from_catalog_uses_detail_page(self) -> None:
         catalog = {"slug": "other-model", "name": "Other Model",

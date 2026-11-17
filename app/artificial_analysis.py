@@ -172,8 +172,15 @@ def parse_aa_briefcase_catalog(html: str) -> list[dict[str, Any]]:
         model for model in _decode_objects(_next_flight_text(html), '{"id":"')
         if isinstance(model.get("slug"), str)
         and isinstance(model.get("name"), str)
-        and isinstance(model.get("briefcaseElo"), (int, float))
+        and isinstance(_briefcase_elo(model), (int, float))
     ]
+
+
+def _briefcase_elo(model: dict[str, Any]) -> float | None:
+    value = model.get("briefcaseElo")
+    if not isinstance(value, (int, float)):
+        value = ((model.get("briefcaseBreakdown") or {}).get("overall") or {}).get("elo")
+    return value if isinstance(value, (int, float)) else None
 
 
 def parse_automationbench_catalog(html: str) -> list[dict[str, Any]]:
@@ -377,11 +384,13 @@ class ArtificialAnalysisClient:
                     follow_redirects=True,
                     headers={"User-Agent": "Mozilla/5.0 (compatible; AIHotModelTracker/1.1)"},
                 ) as client:
-                    response = await client.get(f"/evaluations/{code}", params={"models": name})
-                    response.raise_for_status()
-                filtered = (parse_aa_briefcase_catalog(response.text) if code == "aa-briefcase"
-                            else parse_automationbench_catalog(response.text))
-                selected, method = select_model(name, [model for model in filtered if model["slug"] == name])
+                    response = await client.get(f"/models/{name}")
+                    if response.status_code != 404:
+                        response.raise_for_status()
+                        detail = parse_metric_record(response.text, name)
+                        if detail and isinstance(_briefcase_elo(detail) if code == "aa-briefcase"
+                                                 else detail.get(key), (int, float)):
+                            selected, method = detail, "exact"
             if selected is None:
                 results[name] = {"matched": False, "error": f"未匹配到 {code} 模型"}
                 continue
@@ -393,7 +402,7 @@ class ArtificialAnalysisClient:
                 "parameters_billions": parameters if parameters >= 0 else None,
                 "reasoning_effort": _reasoning_effort(selected),
                 "match_method": method,
-                score_field: round_half_up(selected[key] * (100 if unit == "percent" else 1),
+                score_field: round_half_up((_briefcase_elo(selected) if code == "aa-briefcase" else selected[key]) * (100 if unit == "percent" else 1),
                                            1 if unit == "percent" else 0),
                 "source_url": f"{self.base_url.rstrip('/')}/evaluations/{code}",
                 "fetched_at": datetime.now(timezone.utc).isoformat(),
