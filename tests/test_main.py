@@ -61,6 +61,8 @@ class DatabasePageTests(unittest.TestCase):
                 edit_model(model_id, payload.model_copy(update={"scores": {"unknown": 5}}), "secret", settings, repository)
             self.assertEqual(invalid.exception.status_code, 422)
             self.assertIn('onclick="editModel(this)"', _database_page(repository, "overview"))
+            self.assertIn('onclick="runScan(this)"', _database_page(repository, "overview"))
+            self.assertIn("fetch('/models/scan'", _database_page(repository, "overview"))
 
     def test_supplement_fills_missing_fields_and_shows_log(self) -> None:
         with TemporaryDirectory() as directory:

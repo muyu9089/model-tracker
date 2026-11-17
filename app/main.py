@@ -209,7 +209,7 @@ td{{max-width:420px;overflow:hidden;text-overflow:ellipsis}}tr:last-child td{{bo
 .edit-value{{width:150px;max-width:100%;padding:5px}}.edit-value[type=number]{{width:90px}}[hidden]{{display:none!important}}
 .token-dialog{{border:1px solid #d0d5dd;border-radius:10px;padding:24px;box-shadow:0 12px 32px #0002}}.token-dialog form{{display:grid;gap:12px}}.token-dialog menu{{display:flex;gap:8px;justify-content:end;margin:0;padding:0}}
 </style></head><body><main><h1>模型数据库</h1><p>{title} · {subtitle}</p><nav aria-label="数据菜单">{tabs}</nav>
-{'<div style="margin-bottom:16px"><button type="button" onclick="supplementInfo()">补充缺失信息</button> <form action="/models/export.xlsx" method="get" style="display:inline"><label>更新时间晚于（北京时间） <input type="datetime-local" name="after" required></label> <button type="submit">导出 Excel</button></form></div>' if table == 'overview' else ''}
+{'<div style="margin-bottom:16px"><button type="button" onclick="runScan(this)">运行一次扫描</button> <button type="button" onclick="supplementInfo()">补充缺失信息</button> <form action="/models/export.xlsx" method="get" style="display:inline"><label>更新时间晚于（北京时间） <input type="datetime-local" name="after" required></label> <button type="submit">导出 Excel</button></form></div>' if table == 'overview' else ''}
 <section><table><thead><tr>{header}</tr></thead><tbody>{body}</tbody></table></section></main>
 <dialog id="token-dialog" class="token-dialog" aria-label="输入操作令牌"><form method="dialog">
 <label>操作令牌 <input type="password" required autocomplete="off"></label>
@@ -271,6 +271,21 @@ async function supplementInfo() {{
     if (!response.ok) {{ alert((await response.json()).detail || '补充失败'); return; }}
     location.href = '/?table=supplement';
   }} catch {{ alert('补充失败，请检查网络连接'); }}
+}}
+async function runScan(button) {{
+  if (!confirm('现在运行一次完整扫描？')) return;
+  const token = await operationToken();
+  if (!token) return;
+  button.disabled = true;
+  try {{
+    const response = await fetch('/models/scan', {{method: 'POST', headers: {{'X-Scan-Token': token}}}});
+    clearInvalidToken(response);
+    const result = await response.json();
+    if (!response.ok) {{ alert(result.detail || '扫描失败'); return; }}
+    alert(`扫描完成，新增 ${{result.count}} 个模型`);
+    location.href = '/?table=scan_runs';
+  }} catch {{ alert('扫描失败，请检查网络连接'); }}
+  finally {{ button.disabled = false; }}
 }}
 async function setAaMapping(button) {{
   const code = prompt('评测项代码：intelligence_index、terminalbench-4-0、aa-briefcase、automationbench-aa');
