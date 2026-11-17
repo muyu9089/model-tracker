@@ -384,37 +384,30 @@ def export_models_excel(
 ) -> Response:
     cutoff = (after.replace(tzinfo=ZoneInfo("Asia/Shanghai")) if after.tzinfo is None else after)
     cutoff_utc = cutoff.astimezone(timezone.utc).isoformat()
-    model_ids = [row["id"] for row in repository.rows(
-        "SELECT id FROM models WHERE julianday(updated_at) > julianday(?) ORDER BY id", (cutoff_utc,)
-    )]
-    placeholders = ", ".join("?" for _ in model_ids) or "NULL"
-    benchmark_ids = [row["benchmark_id"] for row in repository.rows(
-        f"SELECT DISTINCT benchmark_id FROM benchmark_states WHERE model_id IN ({placeholders})", tuple(model_ids)
-    )]
-    run_ids = [row["run_id"] for row in repository.rows(
-        f"SELECT DISTINCT run_id FROM scan_run_models WHERE model_id IN ({placeholders})", tuple(model_ids)
-    )]
-    workbook = Workbook()
-    workbook.remove(workbook.active)
-    tables = (
-        ("模型", "models", f"id IN ({placeholders})", tuple(model_ids)),
-        ("模型详情", "model_profiles", f"model_id IN ({placeholders})", tuple(model_ids)),
-        ("评测状态", "benchmark_states", f"model_id IN ({placeholders})", tuple(model_ids)),
-        ("评测结果", "benchmark_results", f"model_id IN ({placeholders})", tuple(model_ids)),
-        ("AA模型映射", "aa_model_mappings", f"model_id IN ({placeholders})", tuple(model_ids)),
-        ("扫描模型", "scan_run_models", f"model_id IN ({placeholders})", tuple(model_ids)),
-        ("评测项", "benchmarks", f"id IN ({', '.join('?' for _ in benchmark_ids) or 'NULL'})", tuple(benchmark_ids)),
-        ("扫描记录", "scan_runs", f"id IN ({', '.join('?' for _ in run_ids) or 'NULL'})", tuple(run_ids)),
+    models = repository.rows(
+        """SELECT m.id AS export_model_id, m.model_name, p.* FROM models m
+           LEFT JOIN model_profiles p ON p.model_id=m.id
+           WHERE julianday(m.updated_at) > julianday(?) ORDER BY m.id""", (cutoff_utc,)
     )
-    for title, table, condition, parameters in tables:
-        sheet = workbook.create_sheet(title)
-        columns = [row["name"] for row in repository.rows(f'PRAGMA table_info("{table}")')]
-        sheet.append(columns)
-        for row in repository.rows(f'SELECT * FROM "{table}" WHERE {condition}', parameters):
-            sheet.append([row[column] for column in columns])
-            for cell in sheet[sheet.max_row]:
-                if isinstance(cell.value, str):
-                    cell.data_type = "s"
+    benchmarks = repository.rows("SELECT id, display_name FROM benchmarks ORDER BY id")
+    model_ids = [model["export_model_id"] for model in models]
+    placeholders = ", ".join("?" for _ in model_ids) or "NULL"
+    scores = {(row["model_id"], row["benchmark_id"]): row["score_value"] for row in repository.rows(
+        f"SELECT model_id, benchmark_id, score_value FROM benchmark_results WHERE model_id IN ({placeholders})",
+        tuple(model_ids),
+    )}
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "模型详情"
+    columns = [row["name"] for row in repository.rows('PRAGMA table_info("model_profiles")')
+               if row["name"] != "collected_at"]
+    sheet.append(["model_name", *columns, *(row["display_name"] for row in benchmarks)])
+    for model in models:
+        sheet.append([model["model_name"], *(model[column] for column in columns),
+                      *(scores.get((model["export_model_id"], benchmark["id"])) for benchmark in benchmarks)])
+        for cell in sheet[sheet.max_row]:
+            if isinstance(cell.value, str):
+                cell.data_type = "s"
     output = BytesIO()
     workbook.save(output)
     filename = f"models_after_{cutoff_utc[:16].replace('-', '').replace(':', '').replace('T', '_')}.xlsx"

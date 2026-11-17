@@ -1,10 +1,12 @@
 import asyncio
+from io import BytesIO
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
+from openpyxl import load_workbook
 
 from app.config import Settings, get_settings
 from app.db import TrackerRepository
@@ -13,6 +15,35 @@ from app.qwen_agent import ModelInfo
 
 
 class DatabasePageTests(unittest.TestCase):
+    def test_excel_export_flattens_profiles_and_benchmark_scores(self) -> None:
+        with TemporaryDirectory() as directory:
+            database = Path(directory) / "tracker.db"
+            repository = TrackerRepository(database)
+            with patch("app.db.repositories.utc_now", return_value="2026-09-21T01:02:03+00:00"):
+                repository.add_model({"name": "Demo"})
+                repository.add_model({"name": "No Profile"})
+                repository.upsert_profile({"model_name": "Demo", "vendor_or_organization": "Example"})
+                repository.save_benchmark_metrics("intelligence_index", ["Demo"],
+                                                  {"Demo": {"matched": True, "intelligence_index": 42}})
+            app.dependency_overrides[get_settings] = lambda: Settings(tracker_database_path=str(database))
+            try:
+                response = TestClient(app).get("/models/export.xlsx?after=2026-09-21T09:00")
+            finally:
+                app.dependency_overrides.clear()
+
+        self.assertEqual(response.status_code, 200)
+        workbook = load_workbook(BytesIO(response.content), read_only=True)
+        self.assertEqual(workbook.sheetnames, ["模型详情"])
+        headers, values, missing_profile = list(workbook.active.values)
+        row = dict(zip(headers, values))
+        self.assertNotIn("collected_at", headers)
+        self.assertNotIn("updated_at", headers)
+        self.assertEqual(row["model_name"], "Demo")
+        self.assertEqual(row["vendor_or_organization"], "Example")
+        self.assertEqual(row["Intelligence Index"], 42)
+        self.assertEqual(missing_profile[0], "No Profile")
+        self.assertIsNone(missing_profile[headers.index("Intelligence Index")])
+
     def test_aa_mapping_requires_token_and_valid_slug(self) -> None:
         with TemporaryDirectory() as directory:
             repository = TrackerRepository(Path(directory) / "tracker.db")
