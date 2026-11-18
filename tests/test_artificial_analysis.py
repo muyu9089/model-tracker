@@ -112,7 +112,8 @@ class NewBenchmarkClientTests(unittest.IsolatedAsyncioTestCase):
         catalog = {"slug": "other-model", "name": "Other Model",
                    "release": {"slug": "other-model"}}
         detail = {"id": "1", "slug": "deepseek-v4-pro", "name": "DeepSeek V4 Pro 0813",
-                  "intelligenceIndex": 23}
+                  "intelligenceIndex": 23, "intelligenceIndexTimePerTask": 150,
+                  "intelligenceIndexOutputTokensPerTask": {"answer": 3000, "reasoning": 4500, "output": 9000}}
         html = flight_html("0:" + json.dumps(catalog, separators=(",", ":")))
         detail_html = flight_html("0:" + json.dumps(detail, separators=(",", ":")))
         with patch("app.artificial_analysis.httpx.AsyncClient") as client_class:
@@ -120,6 +121,8 @@ class NewBenchmarkClientTests(unittest.IsolatedAsyncioTestCase):
             client.get = AsyncMock(return_value=SimpleNamespace(status_code=200, text=detail_html))
             result = await ArtificialAnalysisClient().enrich_models(["deepseek-v4-pro"], html)
         self.assertEqual(result["deepseek-v4-pro"]["intelligence_index"], 23)
+        self.assertEqual(result["deepseek-v4-pro"]["output_tokens"], 7500)
+        self.assertEqual(result["deepseek-v4-pro"]["time_per_task_minutes"], 2.5)
         client.get.assert_awaited_once_with("/models/deepseek-v4-pro")
 
     async def test_enrichment_preserves_elo_and_converts_percent(self) -> None:

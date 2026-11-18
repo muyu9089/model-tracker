@@ -140,13 +140,16 @@ class DatabaseTests(unittest.TestCase):
                 }}
             )
             self.assertEqual(repository.pending_names("intelligence_index"), ["Demo"])
-            repository.save_benchmark_metrics(
-                "intelligence_index", ["Demo"], {"Demo": {
-                    "matched": True, "intelligence_index": 42,
-                    "model_name": "Demo (high)", "slug": "demo-high",
-                    "match_method": "family", "source_url": "https://example.test/demo-high",
-                }}
-            )
+            metric = {
+                "matched": True, "intelligence_index": 42,
+                "model_name": "Demo (high)", "slug": "demo-high",
+                "match_method": "family", "source_url": "https://example.test/demo-high",
+                "output_tokens": 7500,
+            }
+            repository.save_benchmark_metrics("intelligence_index", ["Demo"], {"Demo": metric})
+            self.assertEqual(repository.pending_names("intelligence_index"), ["Demo"])
+            metric["time_seconds"] = 150
+            repository.save_benchmark_metrics("intelligence_index", ["Demo"], {"Demo": metric})
             self.assertEqual(repository.pending_names("intelligence_index"), [])
 
     def test_connection_enables_foreign_keys_and_source_change_resets_one_benchmark(self) -> None:

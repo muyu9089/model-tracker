@@ -15,6 +15,20 @@ from app.qwen_agent import ModelInfo
 
 
 class DatabasePageTests(unittest.TestCase):
+    def test_intelligence_index_task_metrics_display_units(self) -> None:
+        with TemporaryDirectory() as directory:
+            repository = TrackerRepository(Path(directory) / "tracker.db")
+            repository.add_model({"name": "Demo"})
+            repository.save_benchmark_metrics("intelligence_index", ["Demo"], {"Demo": {
+                "matched": True, "intelligence_index": 42, "output_tokens": 7500, "time_seconds": 150,
+            }})
+            for table in ("overview", "benchmark_results"):
+                page = _database_page(repository, table)
+                self.assertIn("<th>time per task</th>", page)
+                self.assertIn("<th>output tokens per task</th>", page)
+                self.assertIn("<td>2.5min</td>", page)
+                self.assertIn("<td>8K</td>", page)
+
     def test_excel_export_flattens_profiles_and_benchmark_scores(self) -> None:
         with TemporaryDirectory() as directory:
             database = Path(directory) / "tracker.db"

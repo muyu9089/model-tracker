@@ -507,7 +507,7 @@ class ArtificialAnalysisClient:
                 if selected is None:
                     return name, {"matched": False, "query_name": name, "match_method": method}
                 slug = str(selected["slug"])
-                metric_record = metric_record or (selected if parse_metric_record(models_html, slug) else None)
+                metric_record = metric_record or parse_metric_record(models_html, slug)
                 if metric_record is None:
                     async with semaphore:
                         detail = await client.get(f"/models/{slug}")
@@ -521,7 +521,12 @@ class ArtificialAnalysisClient:
                         "candidate_slug": slug,
                         "error": "已匹配模型，但未解析到完整指标",
                     }
-                output_tokens = (metric_record.get("intelligenceIndexOutputTokensPerTask") or {}).get("output")
+                token_counts = metric_record.get("intelligenceIndexOutputTokensPerTask")
+                output_tokens = None
+                if isinstance(token_counts, dict):
+                    answer, reasoning = token_counts.get("answer"), token_counts.get("reasoning")
+                    if all(isinstance(value, (int, float)) for value in (answer, reasoning)):
+                        output_tokens = answer + reasoning
                 time_seconds = metric_record.get("intelligenceIndexTimePerTask")
                 effort = metric_record.get("effort") or {}
                 parameters_billions = _parameter_billions(metric_record)

@@ -16,6 +16,7 @@ from mcp.shared.exceptions import McpError
 from openpyxl import Workbook
 from pydantic import BaseModel, Field
 
+from .artificial_analysis import round_half_up
 from .config import Settings, get_settings
 from .db import TrackerRepository
 from .db.repositories import PROFILE_FIELDS, normalize_name
@@ -119,6 +120,14 @@ def _cell(value: Any) -> str:
     return f"<details><summary>{escape(text[:80])}…</summary><pre>{safe}</pre></details>"
 
 
+def _task_metric_cells(row: dict[str, Any]) -> dict[str, str | None]:
+    seconds, tokens = row.get("time_seconds"), row.get("output_tokens")
+    return {
+        "time_seconds": f"{round_half_up(seconds / 60, 1):g}min" if seconds is not None else None,
+        "output_tokens": f"{round_half_up(tokens / 1000)}K" if tokens is not None else None,
+    }
+
+
 def _database_page(repository: TrackerRepository, table: str) -> str:
     counts = {
         name: repository.rows(f'SELECT COUNT(*) AS count FROM "{name}"')[0]["count"]
@@ -145,10 +154,12 @@ def _database_page(repository: TrackerRepository, table: str) -> str:
         scores = {
             (row["model_id"], row["benchmark_id"]): row
             for row in repository.rows(
-                "SELECT model_id, benchmark_id, score_value, score_unit FROM benchmark_results"
+                "SELECT model_id, benchmark_id, score_value, score_unit, time_seconds, output_tokens FROM benchmark_results"
             )
         }
-        columns = ("模型名称", "评测项", "评测结果", "所属组织", "开源状态", "所属地域", "操作")
+        columns = ("模型名称", "评测项", "评测结果", "time per task", "output tokens per task",
+                   "所属组织", "开源状态", "所属地域", "操作")
+        index_id = next(item["id"] for item in benchmarks if item["code"] == "intelligence_index")
         items = "".join(f"<div>{_cell(item['display_name'])}</div>" for item in benchmarks)
         body_rows = []
         for model in models:
@@ -161,9 +172,11 @@ def _database_page(repository: TrackerRepository, table: str) -> str:
                 raw_score = "" if not score or score["score_value"] is None else f'{score["score_value"]:g}'
                 results.append(f'<div><span class="read-value">{_cell(value)}</span>'
                                f'<input class="edit-value" type="number" step="any" data-score="{escape(item["code"], quote=True)}" value="{raw_score}" hidden></div>')
+            task_metrics = _task_metric_cells(scores.get((model["id"], index_id), {}))
             body_rows.append("<tr>" + "".join(
                 f"<td>{value}</td>" for value in (
                     editable(model["model_name"], "model_name"), items, "".join(results),
+                    _cell(task_metrics["time_seconds"]), _cell(task_metrics["output_tokens"]),
                     editable(model["vendor_or_organization"], "vendor_or_organization"),
                     editable(model["open_source_attribute"], "open_source_attribute"), editable(model["region"], "region"),
                     f'<button type="button" data-id="{model["id"]}" onclick="editModel(this)">编辑</button> '
@@ -193,11 +206,17 @@ def _database_page(repository: TrackerRepository, table: str) -> str:
                                       JOIN models m ON m.id=p.model_id ORDER BY p.rowid DESC LIMIT 200""")
         else:
             rows = repository.rows(f'SELECT * FROM "{table}" ORDER BY rowid DESC LIMIT 200')
+        if table == "benchmark_results":
+            rows = [row | _task_metric_cells(row) for row in rows]
         body = "".join(
             "<tr>" + "".join(f"<td>{_cell(row[column])}</td>" for column in columns) + "</tr>"
             for row in rows
         )
-    header = "".join(f"<th>{escape({'model_name': '模型名称', 'updated_at': '更新时间'}.get(column, column) if table == 'model_profiles' else column)}</th>" for column in columns)
+    labels = {
+        "model_profiles": {"model_name": "模型名称", "updated_at": "更新时间"},
+        "benchmark_results": {"time_seconds": "time per task", "output_tokens": "output tokens per task"},
+    }.get(table, {})
+    header = "".join(f"<th>{escape(labels.get(column, column))}</th>" for column in columns)
     body = body or f'<tr><td class="empty" colspan="{len(columns)}">暂无数据</td></tr>'
     title = "模型总览" if table == "overview" else "补充记录" if table == "supplement" else DATABASE_TABLES[table]
     subtitle = "全部模型 · 可删除" if table == "overview" else "最新 200 次 · 只读" if table == "supplement" else "最新 200 行 · 只读"

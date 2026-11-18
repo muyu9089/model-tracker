@@ -238,6 +238,7 @@ class TrackerRepository:
                    WHERE b.code = ? AND (
                      s.status != 'recorded' OR r.score_value IS NULL OR r.matched_model_name IS NULL
                      OR r.matched_slug IS NULL OR r.match_method IS NULL OR r.source_url IS NULL
+                     OR (b.code = 'intelligence_index' AND (r.output_tokens IS NULL OR r.time_seconds IS NULL))
                    ) ORDER BY m.id""",
                 (benchmark_code,),
             )]
