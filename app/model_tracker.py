@@ -29,7 +29,7 @@ MODEL_INFO_FILENAME = "model_info.json"
 async def collect_model_info(
     names: list[str], repository: TrackerRepository, qwen_agent: QwenAgent
 ) -> list[dict[str, Any]]:
-    """Collect profiles for models newly inserted by the current scan."""
+    """Collect missing profiles for models in the current scan."""
     profiles = []
     failures = []
     for name in names:
@@ -74,13 +74,15 @@ async def enrich_with_aa_mappings(repository, aa_client, code, names, html):
 async def update_intelligence_index(
     repository: TrackerRepository,
     aa_client: ArtificialAnalysisClient,
+    names: list[str] | None = None,
 ) -> dict[str, dict[str, Any]]:
     try:
         html = await aa_client.fetch_models_html()
-        description = parse_index_update_text(html)
-        if description:
-            repository.record_source_version("intelligence_index", description)
-        names = repository.pending_names("intelligence_index")
+        if names is None:
+            description = parse_index_update_text(html)
+            if description:
+                repository.record_source_version("intelligence_index", description)
+            names = repository.pending_names("intelligence_index")
         if not names:
             return {}
         metrics = await enrich_with_aa_mappings(repository, aa_client, "intelligence_index", names, html)
@@ -95,8 +97,10 @@ async def update_benchmark(
     repository: TrackerRepository,
     aa_client: ArtificialAnalysisClient,
     code: str,
+    names: list[str] | None = None,
 ) -> dict[str, dict[str, Any]]:
-    names = repository.model_names()
+    if names is None:
+        names = repository.model_names()
     if not names:
         return {}
     try:
@@ -133,10 +137,12 @@ async def scan_once(
     model_info_path: Path | None = None,
     export_dir: Path | None = None,
     export_json: bool | None = None,
+    *,
+    model_names: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     async with SCAN_LOCK:
         return await _scan_once(
-            data_dir, database_path, status_path, model_info_path, export_dir, export_json
+            data_dir, database_path, status_path, model_info_path, export_dir, export_json, model_names
         )
 
 
@@ -147,6 +153,7 @@ async def _scan_once(
     model_info_path: Path | None = None,
     export_dir: Path | None = None,
     export_json: bool | None = None,
+    model_names: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     settings = get_settings()
     now = datetime.now(ZoneInfo(settings.tracker_timezone))
@@ -156,14 +163,27 @@ async def _scan_once(
     export_dir = export_dir or Path(settings.tracker_export_dir).resolve()
     export_json = settings.tracker_json_export_enabled if export_json is None else export_json
     repository = TrackerRepository(database_path)
-    run_id = repository.start_run()
-    new_models: list[dict[str, Any]] = []
+    run_id = repository.start_run() if model_names is None else repository.start_run("by_name")
+    new_model_count = 0
+    scanned_models: list[dict[str, Any]] = []
 
     try:
         qwen_agent = QwenAgent(settings)
-        releases = await qwen_agent.discover_model_releases(AIHotMCPClient(settings))
+        existing = {}
+        if model_names is None:
+            releases = await qwen_agent.discover_model_releases(AIHotMCPClient(settings))
+        else:
+            existing = {row["normalized_name"]: row for row in repository.rows(
+                "SELECT id, model_name, normalized_name FROM models"
+            )}
+            releases = [{"name": name, "item": {}} for name in model_names]
         for release in releases:
             name = str(release["name"]).strip()
+            known = existing.get(normalize_name(name)) if model_names is not None else None
+            if known:
+                repository.add_run_model(run_id, known["id"], len(scanned_models))
+                scanned_models.append({"name": known["model_name"]})
+                continue
             item = release["item"]
             links = item.get("links") if isinstance(item.get("links"), dict) else {}
             record = {
@@ -176,14 +196,16 @@ async def _scan_once(
                 "aihot_id": item.get("id", ""),
             }
             model_id, created = repository.add_model(record)
-            if not created:
+            if not created and model_names is None:
                 continue
-            repository.add_run_model(run_id, model_id, len(new_models))
-            new_models.append(record)
+            repository.add_run_model(run_id, model_id, len(scanned_models))
+            scanned_models.append(record)
+            new_model_count += int(created)
 
-        if new_models:
+        scanned_names = [model["name"] for model in scanned_models]
+        if scanned_names:
             await collect_model_info(
-                [model["name"] for model in new_models], repository, qwen_agent
+                scanned_names, repository, qwen_agent
             )
 
         if settings.artificial_analysis_enabled:
@@ -191,13 +213,13 @@ async def _scan_once(
                 base_url=settings.artificial_analysis_base_url,
                 timeout_seconds=settings.artificial_analysis_timeout_seconds,
             )
-            await update_intelligence_index(repository, aa_client)
-            await update_benchmark(repository, aa_client, "terminalbench-4-0")
-            await update_benchmark(repository, aa_client, "aa-briefcase")
-            await update_benchmark(repository, aa_client, "automationbench-aa")
-        repository.finish_run(run_id, "completed", len(new_models))
+            targets = None if model_names is None else scanned_names
+            await update_intelligence_index(repository, aa_client, targets)
+            for code in ("terminalbench-4-0", "aa-briefcase", "automationbench-aa"):
+                await update_benchmark(repository, aa_client, code, targets)
+        repository.finish_run(run_id, "completed", new_model_count)
     except Exception as exc:
-        repository.finish_run(run_id, "failed", len(new_models), str(exc))
+        repository.finish_run(run_id, "failed", new_model_count, str(exc))
         raise
 
     if export_json:
@@ -210,8 +232,8 @@ async def _scan_once(
         except Exception as exc:
             LOGGER.error("数据库已提交，但 JSON/Markdown 导出失败：%s", exc)
 
-    LOGGER.info("扫描完成，本次新增模型数：%d", len(new_models))
-    return new_models
+    LOGGER.info("扫描完成，本次新增模型数：%d", new_model_count)
+    return scanned_models
 
 
 async def run_daemon(

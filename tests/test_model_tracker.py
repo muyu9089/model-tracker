@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from app.db import TrackerRepository
 from app.exporters import JsonExporter
@@ -257,6 +257,35 @@ class MigrationAndExportTests(unittest.TestCase):
 
 
 class ScanTests(unittest.IsolatedAsyncioTestCase):
+    async def test_named_scan_uses_only_selected_models(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / "tracker.db"
+            repository = TrackerRepository(database)
+            repository.add_model({"name": "Existing", "title": "Original title"})
+            repository.add_model({"name": "Unselected"})
+            with (
+                patch("app.model_tracker.QwenAgent") as agent,
+                patch("app.model_tracker.update_intelligence_index", new_callable=AsyncMock) as index,
+                patch("app.model_tracker.update_benchmark", new_callable=AsyncMock) as benchmark,
+                patch("app.model_tracker.get_settings", return_value=SimpleNamespace(
+                    tracker_timezone="Asia/Shanghai", tracker_export_dir=str(root),
+                    artificial_analysis_enabled=True, artificial_analysis_base_url="https://example.test",
+                    artificial_analysis_timeout_seconds=10,
+                )),
+            ):
+                agent.return_value.research_model_info = AsyncMock(side_effect=profile)
+                models = await scan_once(root, database, export_json=False, model_names=["existing", "New Model"])
+                agent.return_value.discover_model_releases.assert_not_called()
+                self.assertEqual(agent.return_value.research_model_info.await_count, 2)
+                self.assertEqual(index.await_args.args[-1], ["Existing", "New Model"])
+                self.assertEqual([call.args[-1] for call in benchmark.await_args_list], [["Existing", "New Model"]] * 3)
+            self.assertEqual([row["name"] for row in models], ["Existing", "New Model"])
+            self.assertEqual(repository.rows("SELECT mode, new_model_count FROM scan_runs"),
+                             [{"mode": "by_name", "new_model_count": 1}])
+            self.assertEqual(repository.rows("SELECT title FROM models WHERE model_name='Existing'"),
+                             [{"title": "Original title"}])
+
     async def test_daemon_starts_scheduler_and_web_server(self) -> None:
         class FakeScheduler:
             started = False

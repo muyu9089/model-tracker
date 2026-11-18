@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 
 from .config import Settings, get_settings
 from .db import TrackerRepository
-from .db.repositories import PROFILE_FIELDS
+from .db.repositories import PROFILE_FIELDS, normalize_name
 from .mcp_client import AIHotMCPClient
 
 app = FastAPI(title="AIHot MCP Gateway", version="1.0.0")
@@ -34,6 +34,10 @@ DATABASE_TABLES = {
     "scan_run_models": "扫描模型",
     "source_versions": "数据源版本",
 }
+
+
+class NamedScanRequest(BaseModel):
+    names: str = Field(max_length=5000)
 
 
 class ToolCallRequest(BaseModel):
@@ -209,7 +213,7 @@ td{{max-width:420px;overflow:hidden;text-overflow:ellipsis}}tr:last-child td{{bo
 .edit-value{{width:150px;max-width:100%;padding:5px}}.edit-value[type=number]{{width:90px}}[hidden]{{display:none!important}}
 .token-dialog{{border:1px solid #d0d5dd;border-radius:10px;padding:24px;box-shadow:0 12px 32px #0002}}.token-dialog form{{display:grid;gap:12px}}.token-dialog menu{{display:flex;gap:8px;justify-content:end;margin:0;padding:0}}
 </style></head><body><main><h1>模型数据库</h1><p>{title} · {subtitle}</p><nav aria-label="数据菜单">{tabs}</nav>
-{'<div style="margin-bottom:16px"><button type="button" onclick="runScan(this)">运行一次扫描</button> <button type="button" onclick="supplementInfo()">补充缺失信息</button> <form action="/models/export.xlsx" method="get" style="display:inline"><label>更新时间晚于（北京时间） <input type="datetime-local" name="after" required></label> <button type="submit">导出 Excel</button></form></div>' if table == 'overview' else ''}
+{'<div style="margin-bottom:16px"><button type="button" onclick="runScan(this)">运行一次扫描</button> <button type="button" onclick="runScan(this, true)">按名称扫描</button> <button type="button" onclick="supplementInfo()">补充缺失信息</button> <form action="/models/export.xlsx" method="get" style="display:inline"><label>更新时间晚于（北京时间） <input type="datetime-local" name="after" required></label> <button type="submit">导出 Excel</button></form></div>' if table == 'overview' else ''}
 <section><table><thead><tr>{header}</tr></thead><tbody>{body}</tbody></table></section></main>
 <dialog id="token-dialog" class="token-dialog" aria-label="输入操作令牌"><form method="dialog">
 <label>操作令牌 <input type="password" required autocomplete="off"></label>
@@ -272,17 +276,28 @@ async function supplementInfo() {{
     location.href = '/?table=supplement';
   }} catch {{ alert('补充失败，请检查网络连接'); }}
 }}
-async function runScan(button) {{
-  if (!confirm('现在运行一次完整扫描？')) return;
+async function runScan(button, byName = false) {{
+  let names;
+  if (byName) {{
+    names = prompt('输入模型名称，多个名称用分号分隔');
+    if (names === null) return;
+    if (!names.split(/[;；]/).some(name => name.trim())) {{ alert('请输入至少一个模型名称'); return; }}
+  }} else if (!confirm('现在运行一次完整扫描？')) return;
   const token = await operationToken();
   if (!token) return;
   button.disabled = true;
   try {{
-    const response = await fetch('/models/scan', {{method: 'POST', headers: {{'X-Scan-Token': token}}}});
+    const headers = {{'X-Scan-Token': token}};
+    const options = {{method: 'POST', headers}};
+    if (byName) {{
+      headers['Content-Type'] = 'application/json';
+      options.body = JSON.stringify({{names}});
+    }}
+    const response = await fetch('/models/scan', options);
     clearInvalidToken(response);
     const result = await response.json();
-    if (!response.ok) {{ alert(result.detail || '扫描失败'); return; }}
-    alert(`扫描完成，新增 ${{result.count}} 个模型`);
+    if (!response.ok) {{ alert(typeof result.detail === 'string' ? result.detail : '扫描失败，请检查模型名称'); return; }}
+    alert(`扫描完成，${{byName ? '已处理' : '新增'}} ${{result.count}} 个模型`);
     location.href = '/?table=scan_runs';
   }} catch {{ alert('扫描失败，请检查网络连接'); }}
   finally {{ button.disabled = false; }}
@@ -572,6 +587,7 @@ async def scan_models(
     request: Request,
     x_scan_token: str = Header(default=""),
     settings: Settings = Depends(get_settings),
+    selection: NamedScanRequest | None = None,
 ) -> dict[str, Any]:
     if not settings.tracker_scan_token:
         raise HTTPException(status_code=503, detail="未配置 TRACKER_SCAN_TOKEN")
@@ -582,7 +598,21 @@ async def scan_models(
     if SCAN_LOCK.locked():
         raise HTTPException(status_code=409, detail="扫描正在进行中")
     args = getattr(request.app.state, "tracker_scan_args", (Path("data").resolve(),))
-    models = await scan_once(*args)
+    if selection is None:
+        models = await scan_once(*args)
+    else:
+        names = {}
+        for part in selection.names.replace("；", ";").split(";"):
+            name = part.strip()
+            if not name:
+                continue
+            key = normalize_name(name)
+            if not key or not 2 <= len(name) <= 200:
+                raise HTTPException(status_code=422, detail="模型名称须为 2 至 200 个字符，且包含字母或数字")
+            names.setdefault(key, name)
+        if not names:
+            raise HTTPException(status_code=422, detail="请输入至少一个模型名称")
+        models = await scan_once(*args, model_names=list(names.values()))
     return {"count": len(models), "models": models}
 
 
