@@ -152,6 +152,28 @@ class DatabaseTests(unittest.TestCase):
             repository.save_benchmark_metrics("intelligence_index", ["Demo"], {"Demo": metric})
             self.assertEqual(repository.pending_names("intelligence_index"), [])
 
+    def test_empty_score_clears_previously_saved_metrics_and_logs_no_data(self) -> None:
+        with TemporaryDirectory() as directory:
+            repository = TrackerRepository(Path(directory) / "tracker.db")
+            repository.add_model({"name": "Demo"})
+            repository.save_benchmark_metrics("intelligence_index", ["Demo"], {"Demo": {
+                "matched": True, "intelligence_index": 42,
+                "output_tokens": 7500, "time_seconds": 150,
+            }})
+
+            with self.assertLogs("app.db.repositories", level="WARNING") as logs:
+                repository.save_benchmark_metrics("intelligence_index", ["Demo"], {"Demo": {
+                    "matched": True, "intelligence_index": None,
+                    "output_tokens": 9000, "time_seconds": 180,
+                }})
+
+            row = repository.rows("""SELECT r.score_value, r.output_tokens, r.time_seconds,
+                s.status, s.update_error FROM benchmark_results r
+                JOIN benchmark_states s ON s.model_id=r.model_id AND s.benchmark_id=r.benchmark_id""")[0]
+            self.assertEqual((row["score_value"], row["output_tokens"], row["time_seconds"]), (None, None, None))
+            self.assertEqual((row["status"], row["update_error"]), ("pending", "无数据"))
+            self.assertIn("无数据", logs.output[0])
+
     def test_connection_enables_foreign_keys_and_source_change_resets_one_benchmark(self) -> None:
         with TemporaryDirectory() as directory:
             repository = TrackerRepository(Path(directory) / "tracker.db")

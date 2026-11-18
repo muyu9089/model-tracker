@@ -1,4 +1,5 @@
 import hashlib
+import logging
 import math
 import re
 import unicodedata
@@ -16,6 +17,7 @@ BENCHMARKS = {
     "aa-briefcase": "AA-Briefcase v1.1",
     "automationbench-aa": "AutomationBench-AA",
 }
+LOGGER = logging.getLogger(__name__)
 PROFILE_FIELDS = (
     "open_source_attribute", "vendor_or_organization", "model_series",
     "release_or_api_url", "release_date", "model_architecture", "region",
@@ -293,27 +295,24 @@ class TrackerRepository:
                     continue
                 model_id = int(model["id"])
                 metric = metrics.get(name) or {}
-                if not metric.get("matched"):
-                    connection.execute(
-                        """UPDATE benchmark_states SET status='pending', update_error=?, updated_at=?
-                           WHERE model_id=? AND benchmark_id=?""",
-                        (metric.get("error") or f"未获取到 {BENCHMARKS[benchmark_code]} 指标",
-                         now, model_id, benchmark_id),
-                    )
-                    continue
                 score = metric.get({
                     "intelligence_index": "intelligence_index",
                     "terminalbench-4-0": "terminalbench_4_0_score",
                     "aa-briefcase": "aa_briefcase_score",
                     "automationbench-aa": "automationbench_aa_score",
                 }[benchmark_code])
-                tokens = metric.get("output_tokens")
-                if not isinstance(tokens, (int, float)):
-                    tokens = _display_tokens_to_int(metric.get("output_tokens_per_task"))
-                seconds = metric.get("time_seconds")
-                if not isinstance(seconds, (int, float)):
-                    minutes = metric.get("time_per_task_minutes")
-                    seconds = float(minutes) * 60 if isinstance(minutes, (int, float)) else None
+                has_score = metric.get("matched") and score is not None
+                if has_score:
+                    tokens = metric.get("output_tokens")
+                    if not isinstance(tokens, (int, float)):
+                        tokens = _display_tokens_to_int(metric.get("output_tokens_per_task"))
+                    seconds = metric.get("time_seconds")
+                    if not isinstance(seconds, (int, float)):
+                        minutes = metric.get("time_per_task_minutes")
+                        seconds = float(minutes) * 60 if isinstance(minutes, (int, float)) else None
+                else:
+                    LOGGER.warning("%s / %s：无数据", BENCHMARKS[benchmark_code], name)
+                    score = tokens = seconds = None
                 connection.execute(
                     """INSERT INTO benchmark_results(
                        model_id, benchmark_id, score_value, score_unit, output_tokens, time_seconds,
@@ -339,8 +338,10 @@ class TrackerRepository:
                      metric.get("fetched_at") or now),
                 )
                 connection.execute(
-                    """UPDATE benchmark_states SET status='recorded', update_error=NULL, updated_at=?
-                       WHERE model_id=? AND benchmark_id=?""", (now, model_id, benchmark_id),
+                    """UPDATE benchmark_states SET status=?, update_error=?, updated_at=?
+                       WHERE model_id=? AND benchmark_id=?""",
+                    ("recorded" if has_score else "pending",
+                     None if has_score else "无数据", now, model_id, benchmark_id),
                 )
 
     def start_run(self, mode: str = "scan") -> int:

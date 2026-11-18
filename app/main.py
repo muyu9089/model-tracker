@@ -596,7 +596,7 @@ async def supplement_models(
                     for name in names:
                         if name not in completed:
                             failed += 1
-                            errors.append(f"{code} / {name}：{metrics.get(name, {}).get('error') or '评测分数缺失'}")
+                            errors.append(f"{code} / {name}：{metrics.get(name, {}).get('error') or '无数据'}")
                 except Exception as exc:
                     failed += len(names)
                     errors.append(f"{code}：{type(exc).__name__}：{exc}")
