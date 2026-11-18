@@ -131,14 +131,25 @@ class NewBenchmarkClientTests(unittest.IsolatedAsyncioTestCase):
             "parameters": 235, "effort": {"label": "max", "level": 60},
             "briefcaseElo": 1812,
             "automationBenchPartialScore": 0.51340206185567,
+            "canonicalEvalTokenCounts": {
+                "briefcase": {"answer": 1000, "reasoning": 5000},
+                "automationBench": {"answer": 1000, "reasoning": 5000},
+            },
+            "briefcaseBreakdown": {"turns": {"total": 12, "avgPerTask": 6}, "totalToolMs": 60000},
+            "automationBenchBreakdown": {"observedTaskCount": 3},
+            "outputSpeed": 100,
         }
         html = flight_html("0:" + json.dumps(record, separators=(",", ":")))
         results = await ArtificialAnalysisClient().enrich_aa_briefcase_models(
             ["Qwen3.8 Max", "Qwen3.7 Max", "Unrelated Model"], html
         )
         self.assertEqual(results["Qwen3.8 Max"]["aa_briefcase_score"], 1812)
+        self.assertEqual(results["Qwen3.8 Max"]["output_tokens"], 3000)
+        self.assertEqual(results["Qwen3.8 Max"]["time_seconds"], 60)
         percent = await ArtificialAnalysisClient().enrich_automationbench_models(["Qwen3.8 Max"], html)
         self.assertEqual(percent["Qwen3.8 Max"]["automationbench_aa_score"], 51.3)
+        self.assertEqual(percent["Qwen3.8 Max"]["output_tokens"], 2000)
+        self.assertEqual(percent["Qwen3.8 Max"]["time_seconds"], 20)
         self.assertEqual(results["Qwen3.8 Max"]["parameters_billions"], 235.0)
         self.assertEqual(results["Qwen3.8 Max"]["reasoning_effort"], "max")
         self.assertFalse(results["Qwen3.7 Max"]["matched"])

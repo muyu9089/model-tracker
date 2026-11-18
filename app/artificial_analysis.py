@@ -183,6 +183,29 @@ def _briefcase_elo(model: dict[str, Any]) -> float | None:
     return value if isinstance(value, (int, float)) else None
 
 
+def _evaluation_task_metrics(
+    model: dict[str, Any], token_key: str, task_count: int | float | None,
+    tool_ms: int | float | None = 0,
+) -> dict[str, Any]:
+    counts = (model.get("canonicalEvalTokenCounts") or {}).get(token_key) or {}
+    answer, reasoning = counts.get("answer"), counts.get("reasoning")
+    tokens = None
+    if isinstance(task_count, (int, float)) and task_count > 0 and all(
+        isinstance(value, (int, float)) for value in (answer, reasoning)
+    ):
+        tokens = (answer + reasoning) / task_count
+    speed = model.get("medianCanonicalAnswerOutputSpeed") or model.get("outputSpeed")
+    seconds = None
+    if tokens is not None and isinstance(speed, (int, float)) and speed > 0 and isinstance(tool_ms, (int, float)):
+        seconds = tokens / speed + tool_ms / 1000 / task_count
+    return {
+        "output_tokens": round_half_up(tokens),
+        "time_seconds": seconds,
+        "output_tokens_per_task": format_thousands(tokens),
+        "time_per_task_minutes": round_half_up(seconds / 60, 1) if seconds is not None else None,
+    }
+
+
 def parse_automationbench_catalog(html: str) -> list[dict[str, Any]]:
     return [
         model for model in _decode_objects(_next_flight_text(html), '{"id":"')
@@ -397,8 +420,18 @@ class ArtificialAnalysisClient:
             if selected is None:
                 results[name] = {"matched": False, "error": f"未匹配到 {code} 模型"}
                 continue
+            if code == "aa-briefcase":
+                breakdown = selected.get("briefcaseBreakdown") or {}
+                turns = breakdown.get("turns") or {}
+                total, average = turns.get("total"), turns.get("avgPerTask")
+                task_count = round(total / average) if isinstance(total, (int, float)) and isinstance(average, (int, float)) and average > 0 else None
+                task_metrics = _evaluation_task_metrics(selected, "briefcase", task_count, breakdown.get("totalToolMs"))
+            else:
+                breakdown = selected.get("automationBenchBreakdown") or {}
+                task_metrics = _evaluation_task_metrics(selected, "automationBench", breakdown.get("observedTaskCount"))
             parameters = _parameter_billions(selected)
             results[name] = {
+                **task_metrics,
                 "matched": True,
                 "model_name": selected["name"],
                 "slug": selected["slug"],
@@ -445,11 +478,6 @@ class ArtificialAnalysisClient:
             if selected is None:
                 results[name] = {"matched": False, "error": "未匹配到 Terminal-Bench 4.0 模型"}
                 continue
-            counts = (selected.get("canonicalEvalTokenCounts") or {}).get("terminalBench40") or {}
-            answer, reasoning = counts.get("answer"), counts.get("reasoning")
-            speed = selected.get("medianCanonicalAnswerOutputSpeed")
-            tokens_per_task = (answer + reasoning) / 66 if all(isinstance(value, (int, float)) for value in (answer, reasoning)) else None
-            time_seconds = tokens_per_task / speed if isinstance(tokens_per_task, (int, float)) and isinstance(speed, (int, float)) and speed > 0 else None
             parameters = _parameter_billions(selected)
             results[name] = {
                 "matched": True,
@@ -459,10 +487,7 @@ class ArtificialAnalysisClient:
                 "reasoning_effort": _reasoning_effort(selected),
                 "match_method": method,
                 "terminalbench_4_0_score": round_half_up(selected["terminalBench40"] * 100, 1),
-                "output_tokens": round_half_up(tokens_per_task),
-                "time_seconds": time_seconds,
-                "output_tokens_per_task": format_thousands(tokens_per_task),
-                "time_per_task_minutes": round_half_up(time_seconds / 60, 1) if time_seconds is not None else None,
+                **_evaluation_task_metrics(selected, "terminalBench40", 66),
                 "source_url": f"{self.base_url.rstrip('/')}/evaluations/terminalbench-4-0",
                 "fetched_at": datetime.now(timezone.utc).isoformat(),
             }

@@ -26,8 +26,8 @@ class DatabasePageTests(unittest.TestCase):
                 page = _database_page(repository, table)
                 self.assertIn("<th>time per task</th>", page)
                 self.assertIn("<th>output tokens per task</th>", page)
-                self.assertIn("<td>2.5min</td>", page)
-                self.assertIn("<td>8K</td>", page)
+                self.assertIn(">2.5min<", page)
+                self.assertIn(">8K<", page)
 
     def test_excel_export_flattens_profiles_and_benchmark_scores(self) -> None:
         with TemporaryDirectory() as directory:

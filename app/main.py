@@ -159,24 +159,27 @@ def _database_page(repository: TrackerRepository, table: str) -> str:
         }
         columns = ("模型名称", "评测项", "评测结果", "time per task", "output tokens per task",
                    "所属组织", "开源状态", "所属地域", "操作")
-        index_id = next(item["id"] for item in benchmarks if item["code"] == "intelligence_index")
         items = "".join(f"<div>{_cell(item['display_name'])}</div>" for item in benchmarks)
         body_rows = []
         for model in models:
             results = []
+            times = []
+            tokens = []
             for item in benchmarks:
                 score = scores.get((model["id"], item["id"]))
+                task_metrics = _task_metric_cells(score or {})
+                times.append(f'<div>{_cell(task_metrics["time_seconds"])}</div>')
+                tokens.append(f'<div>{_cell(task_metrics["output_tokens"])}</div>')
                 value = "—" if not score or score["score_value"] is None else f"{score['score_value']:g}"
                 if score and score["score_value"] is not None and score["score_unit"] == "percent":
                     value += "%"
                 raw_score = "" if not score or score["score_value"] is None else f'{score["score_value"]:g}'
                 results.append(f'<div><span class="read-value">{_cell(value)}</span>'
                                f'<input class="edit-value" type="number" step="any" data-score="{escape(item["code"], quote=True)}" value="{raw_score}" hidden></div>')
-            task_metrics = _task_metric_cells(scores.get((model["id"], index_id), {}))
             body_rows.append("<tr>" + "".join(
                 f"<td>{value}</td>" for value in (
                     editable(model["model_name"], "model_name"), items, "".join(results),
-                    _cell(task_metrics["time_seconds"]), _cell(task_metrics["output_tokens"]),
+                    "".join(times), "".join(tokens),
                     editable(model["vendor_or_organization"], "vendor_or_organization"),
                     editable(model["open_source_attribute"], "open_source_attribute"), editable(model["region"], "region"),
                     f'<button type="button" data-id="{model["id"]}" onclick="editModel(this)">编辑</button> '
