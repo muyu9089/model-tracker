@@ -429,8 +429,9 @@ def export_models_excel(
     benchmarks = repository.rows("SELECT id, display_name FROM benchmarks ORDER BY id")
     model_ids = [model["export_model_id"] for model in models]
     placeholders = ", ".join("?" for _ in model_ids) or "NULL"
-    scores = {(row["model_id"], row["benchmark_id"]): row["score_value"] for row in repository.rows(
-        f"SELECT model_id, benchmark_id, score_value FROM benchmark_results WHERE model_id IN ({placeholders})",
+    results = {(row["model_id"], row["benchmark_id"]): row for row in repository.rows(
+        f"""SELECT model_id, benchmark_id, score_value, time_seconds, output_tokens
+            FROM benchmark_results WHERE model_id IN ({placeholders})""",
         tuple(model_ids),
     )}
     workbook = Workbook()
@@ -438,10 +439,17 @@ def export_models_excel(
     sheet.title = "模型详情"
     columns = [row["name"] for row in repository.rows('PRAGMA table_info("model_profiles")')
                if row["name"] != "collected_at"]
-    sheet.append(["model_name", *columns, *(row["display_name"] for row in benchmarks)])
+    benchmark_names = [row["display_name"] for row in benchmarks]
+    metric_headers = [f"{name} {metric}" for name in benchmark_names
+                      for metric in ("time per task", "output tokens per task")]
+    sheet.append(["model_name", *columns, *benchmark_names, *metric_headers])
     for model in models:
+        benchmark_results = [results.get((model["export_model_id"], benchmark["id"]), {})
+                             for benchmark in benchmarks]
+        task_metrics = [_task_metric_cells(result) for result in benchmark_results]
         sheet.append([model["model_name"], *(model[column] for column in columns),
-                      *(scores.get((model["export_model_id"], benchmark["id"])) for benchmark in benchmarks)])
+                      *(result.get("score_value") for result in benchmark_results),
+                      *(metric[key] for metric in task_metrics for key in ("time_seconds", "output_tokens"))])
         for cell in sheet[sheet.max_row]:
             if isinstance(cell.value, str):
                 cell.data_type = "s"

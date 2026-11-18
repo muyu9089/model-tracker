@@ -37,8 +37,12 @@ class DatabasePageTests(unittest.TestCase):
                 repository.add_model({"name": "Demo"})
                 repository.add_model({"name": "No Profile"})
                 repository.upsert_profile({"model_name": "Demo", "vendor_or_organization": "Example"})
-                repository.save_benchmark_metrics("intelligence_index", ["Demo"],
-                                                  {"Demo": {"matched": True, "intelligence_index": 42}})
+                repository.save_benchmark_metrics("intelligence_index", ["Demo"], {"Demo": {
+                    "matched": True, "intelligence_index": 42, "time_seconds": 150, "output_tokens": 7500,
+                }})
+                repository.save_benchmark_metrics("terminalbench-4-0", ["Demo"], {"Demo": {
+                    "matched": True, "terminalbench_4_0_score": 50, "time_seconds": 60, "output_tokens": 3000,
+                }})
             app.dependency_overrides[get_settings] = lambda: Settings(tracker_database_path=str(database))
             try:
                 response = TestClient(app).get("/models/export.xlsx?after=2026-09-21T09:00")
@@ -55,6 +59,12 @@ class DatabasePageTests(unittest.TestCase):
         self.assertEqual(row["model_name"], "Demo")
         self.assertEqual(row["vendor_or_organization"], "Example")
         self.assertEqual(row["Intelligence Index"], 42)
+        self.assertEqual(row["Intelligence Index time per task"], "2.5min")
+        self.assertEqual(row["Intelligence Index output tokens per task"], "8K")
+        self.assertEqual(row["Terminal-Bench 4.0 time per task"], "1min")
+        self.assertEqual(row["Terminal-Bench 4.0 output tokens per task"], "3K")
+        self.assertIsNone(row["AA-Briefcase v1.1 time per task"])
+        self.assertIsNone(row["AutomationBench-AA output tokens per task"])
         self.assertEqual(missing_profile[0], "No Profile")
         self.assertIsNone(missing_profile[headers.index("Intelligence Index")])
 
